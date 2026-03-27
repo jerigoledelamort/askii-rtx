@@ -6,9 +6,10 @@ class Button:
         self.text = text
         self.clicked = False
 
-    def handle(self, event):
+    def handle(self, event, x_offset=0):
         if event.type == pygame.MOUSEBUTTONDOWN:
-            if self.rect.collidepoint(event.pos):
+            local_pos = (event.pos[0] - x_offset, event.pos[1])
+            if self.rect.collidepoint(local_pos):
                 self.clicked = True
 
     def draw(self, surface, font):
@@ -26,16 +27,17 @@ class Slider:
         self.dragging = False
         self.is_int = is_int  # 🔥 тип значения
 
-    def handle(self, event):
+    def handle(self, event, x_offset=0):
         if event.type == pygame.MOUSEBUTTONDOWN:
-            if self.rect.collidepoint(event.pos):
+            local_pos = (event.pos[0] - x_offset, event.pos[1])
+            if self.rect.collidepoint(local_pos):
                 self.dragging = True
 
         if event.type == pygame.MOUSEBUTTONUP:
             self.dragging = False
 
         if event.type == pygame.MOUSEMOTION and self.dragging:
-            x = event.pos[0]
+            x = event.pos[0] - x_offset
             t = (x - self.rect.x) / self.rect.w
             t = max(0, min(1, t))
 

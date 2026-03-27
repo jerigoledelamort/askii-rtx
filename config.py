@@ -12,14 +12,14 @@ WINDOW = {
 # -------- MODE --------
 MODE = {
     "type": "realtime",            # "realtime" | "bake"
-    "bake_frames": 120,        # количество кадров цикла
+    "bake_frames": 240,        # количество кадров цикла
     "playback_fps": 30,
     "save_file": "frames.pkl"
 }
 
 BAKE = {
     "frames": 120,        # длина анимации
-    "bounces": 4,         # отражения
+    "bounces": 1,         # отражения
     "samples": 1,         # антиалиасинг
     "font_size": 12       # финальный размер
 }
@@ -44,7 +44,7 @@ CAMERA = {
     "radius": 2.0,             # дистанция до центра
     "height": 1.0,             # базовая высота
 
-    "speed": 0.2,              # оборотов в секунду (задаёт длительность цикла)
+    "speed": 0.05,              # оборотов в секунду (задаёт длительность цикла)
 
     "wave_amplitude": 0.3,     # вертикальное движение
     "wave_speed": 2.0
@@ -81,7 +81,7 @@ SCENE = {
         },
 
         "scale": {
-            "type": "pulse",      # none | pulse
+            "type": "none",      # none | pulse
             "amplitude": 0.2,     # изменение радиуса
             "speed": 2.0
         }
@@ -90,18 +90,18 @@ SCENE = {
     "box": {
         "base": {
             "pos": (-0.5, 0, 0),
-            "size": (0.4, 0.4, 0.4)
+            "size": (0.5, 0.5, 0.5)
         },
 
         "position": {
-            "type": "oscillate",
+            "type": "none",
             "axis": "y",
             "amplitude": 0.2,
             "speed": 2.0
         },
 
         "scale": {
-            "type": "pulse",
+            "type": "none",
             "amplitude": 0.1,
             "speed": 2.0
         }

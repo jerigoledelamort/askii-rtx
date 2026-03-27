@@ -12,8 +12,13 @@ WIDTH = config.WINDOW["width"]
 HEIGHT = config.WINDOW["height"]
 FPS = config.WINDOW["fps"]
 
+RENDER_WIDTH = WIDTH
+RENDER_HEIGHT = HEIGHT
+UI_WIDTH = int(RENDER_WIDTH * 0.25)
+WINDOW_WIDTH = RENDER_WIDTH + UI_WIDTH
+
 pygame.init()
-screen = pygame.display.set_mode((WIDTH, HEIGHT))
+screen = pygame.display.set_mode((WINDOW_WIDTH, RENDER_HEIGHT))
 pygame.display.set_caption("ASCII Raytracer")
 
 clock = pygame.time.Clock()
@@ -27,12 +32,13 @@ chars = build_char_ramp(config.RENDER["chars"], font)
 
 char_w, char_h = font.size("A")
 
-W = WIDTH // char_w
-H = HEIGHT // char_h
+W = RENDER_WIDTH // char_w
+H = RENDER_HEIGHT // char_h
 
 aspect = (W * char_w) / (H * char_h)
 
-surface = pygame.Surface((WIDTH, HEIGHT))
+render_surface = pygame.Surface((RENDER_WIDTH, RENDER_HEIGHT))
+ui_surface = pygame.Surface((UI_WIDTH, RENDER_HEIGHT))
 
 char_cache = {
     c: font.render(c, False, (255, 255, 255))
@@ -46,19 +52,23 @@ frame_index = 0
 
 # -------- UI --------
 ui_font = pygame.font.SysFont("consolas", 16)
+PANEL_PADDING = 20
+SLIDER_WIDTH = UI_WIDTH - PANEL_PADDING * 2
+SLIDER_STEP_Y = 56
+TOP_Y = 50
 
 sliders = [
-    Slider(600, 50, 200, 2, 10, config.CAMERA["radius"], "cam radius"),
-    Slider(600, 100, 200, -5, 5, config.CAMERA["height"], "cam height"),
-    Slider(600, 150, 200, 0.05, 1.0, config.CAMERA["speed"], "cam speed"),
+    Slider(PANEL_PADDING, TOP_Y + SLIDER_STEP_Y * 0, SLIDER_WIDTH, 2, 10, config.CAMERA["radius"], "cam radius"),
+    Slider(PANEL_PADDING, TOP_Y + SLIDER_STEP_Y * 1, SLIDER_WIDTH, -5, 5, config.CAMERA["height"], "cam height"),
+    Slider(PANEL_PADDING, TOP_Y + SLIDER_STEP_Y * 2, SLIDER_WIDTH, 0.05, 1.0, config.CAMERA["speed"], "cam speed"),
 
-    Slider(600, 250, 200, 30, 600, config.BAKE["frames"], "frames", True),
-    Slider(600, 300, 200, 1, 10, config.BAKE["bounces"], "bounces", True),
-    Slider(600, 350, 200, 1, 8, config.BAKE["samples"], "samples", True),
-    Slider(600, 400, 200, 6, 24, config.BAKE["font_size"], "font size", True),
+    Slider(PANEL_PADDING, TOP_Y + SLIDER_STEP_Y * 4, SLIDER_WIDTH, 30, 600, config.BAKE["frames"], "frames", True),
+    Slider(PANEL_PADDING, TOP_Y + SLIDER_STEP_Y * 5, SLIDER_WIDTH, 1, 10, config.BAKE["bounces"], "bounces", True),
+    Slider(PANEL_PADDING, TOP_Y + SLIDER_STEP_Y * 6, SLIDER_WIDTH, 1, 8, config.BAKE["samples"], "samples", True),
+    Slider(PANEL_PADDING, TOP_Y + SLIDER_STEP_Y * 7, SLIDER_WIDTH, 6, 24, config.BAKE["font_size"], "font size", True),
 ]
 
-bake_button = Button(600, 460, 200, 30, "BAKE")
+bake_button = Button(PANEL_PADDING, TOP_Y + SLIDER_STEP_Y * 8 + 12, SLIDER_WIDTH, 30, "BAKE")
 
 # -------- INIT --------
 
@@ -83,15 +93,21 @@ while running:
     scene_time += dt  # 🔥 сцена живёт отдельно
 
     for event in pygame.event.get():
-        bake_button.handle(event)
-
         if event.type == pygame.QUIT:
             running = False
 
-        for s in sliders:
-            s.handle(event)
+        if event.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEMOTION):
+            if event.pos[0] >= RENDER_WIDTH:
+                bake_button.handle(event, x_offset=RENDER_WIDTH)
+                for s in sliders:
+                    s.handle(event, x_offset=RENDER_WIDTH)
+        elif event.type == pygame.MOUSEBUTTONUP:
+            bake_button.handle(event, x_offset=RENDER_WIDTH)
+            for s in sliders:
+                s.handle(event, x_offset=RENDER_WIDTH)
 
-    surface.fill((0, 0, 0))
+    render_surface.fill((0, 0, 0))
+    ui_surface.fill((24, 24, 24))
 
     # --- UI → CONFIG ---
     config.CAMERA["radius"] = sliders[0].value
@@ -107,22 +123,20 @@ while running:
 
     if mode == "realtime":
         buffer = render_frame_buffer(W, H, aspect, scene_time, camera_angle, dt, chars)
-        draw_buffer(surface, buffer, chars, char_cache, char_w, char_h)
+        draw_buffer(render_surface, buffer, chars, char_cache, char_w, char_h)
 
     elif mode == "playback":
         buffer = frames[frame_index]
-        draw_buffer(surface, buffer, chars, char_cache, char_w, char_h)
+        draw_buffer(render_surface, buffer, chars, char_cache, char_w, char_h)
 
         frame_index += 1
         if frame_index >= len(frames):
             frame_index = 0
 
-    screen.blit(surface, (0, 0))
-
     for s in sliders:
-        s.draw(screen, ui_font)
+        s.draw(ui_surface, ui_font)
 
-    bake_button.draw(screen, ui_font)
+    bake_button.draw(ui_surface, ui_font)
     if bake_button.clicked:
         bake_button.clicked = False
 
@@ -142,6 +156,9 @@ while running:
 
         config.RENDER["samples"] = old_samples
         config.RENDER["bounces"] = old_bounces
+
+    screen.blit(render_surface, (0, 0))
+    screen.blit(ui_surface, (RENDER_WIDTH, 0))
     pygame.display.flip()
 
 pygame.quit()
