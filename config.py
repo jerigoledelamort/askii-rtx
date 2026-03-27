@@ -11,23 +11,30 @@ WINDOW = {
 
 # -------- MODE --------
 MODE = {
-    "type": "bake",            # "realtime" | "bake"
-    "bake_frames": 240,        # количество кадров цикла
+    "type": "realtime",            # "realtime" | "bake"
+    "bake_frames": 120,        # количество кадров цикла
     "playback_fps": 30,
     "save_file": "frames.pkl"
 }
 
+BAKE = {
+    "frames": 120,        # длина анимации
+    "bounces": 4,         # отражения
+    "samples": 1,         # антиалиасинг
+    "font_size": 12       # финальный размер
+}
+
 # -------- RENDER --------
 RENDER = {
-    "chars": " .:-=+*#%@",
-    "bounces": 4,
-    "samples": 4
+    "chars": " .'`^\",:;Il!i~+_-?][}{1)(|\\/tfjrxnuvczXYUJCLQ0OZmwqpdbkhao*#MW&8%B@$",
+    "bounces": 1,
+    "samples": 1
 }
 
 # -------- FONT --------
 FONT = {
     "name": "Consolas",
-    "size": 8
+    "size": 12
 }
 
 # -------- CAMERA --------

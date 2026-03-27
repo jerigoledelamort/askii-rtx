@@ -1,18 +1,13 @@
 import math
 import config
 
-def get_camera(time):
-    cfg = config.CAMERA
+def get_camera(angle):  # 🔥 теперь это уже угол, не время
+    cam = config.CAMERA
 
-    radius = cfg["radius"]
-    height = cfg["height"]
-    speed = cfg["speed"]
+    radius = cam["radius"]
+    height = cam["height"]
 
-    duration = 1 / speed
-    phase = time / duration
-    angle = phase * 2 * math.pi
-
-    mode = cfg.get("mode", "orbit")
+    mode = cam.get("mode", "orbit")
 
     if mode == "orbit":
         x = radius * math.cos(angle)
@@ -22,7 +17,7 @@ def get_camera(time):
     elif mode == "wave":
         x = radius * math.cos(angle)
         z = radius * math.sin(angle)
-        y = height + math.sin(angle * cfg["wave_speed"]) * cfg["wave_amplitude"]
+        y = height + math.sin(angle * cam["wave_speed"]) * cam["wave_amplitude"]
 
     else:
         x, y, z = 0, height, radius

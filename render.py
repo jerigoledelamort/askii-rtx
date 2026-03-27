@@ -1,10 +1,11 @@
 from camera import get_camera
 from lighting import get_light, shade
 import math
+import random
 import config
 
 
-def render_frame_buffer(W, H, aspect, time, dt, chars):
+def render_frame_buffer(W, H, aspect, scene_time, camera_angle, dt, chars):
     light = get_light()
     samples = config.RENDER["samples"]
 
@@ -13,16 +14,21 @@ def render_frame_buffer(W, H, aspect, time, dt, chars):
     for x in range(W):
         for y in range(H):
 
-            nx = (x + 0.5) / W * 2 - 1
-            ny = (y + 0.5) / H * 2 - 1
-            nx *= aspect
-
             color = 0.0
 
             for i in range(samples):
-                t_offset = time - config.CAMERA["speed"] * dt * (i / samples)
+                # 🔥 jitter (ключевая штука)
+                jx = random.random()
+                jy = random.random()
 
-                ro, forward, right, up = get_camera(t_offset)
+                nx = (x + jx) / W * 2 - 1
+                ny = (y + jy) / H * 2 - 1
+                nx *= aspect
+
+                # временной сдвиг (можно оставить)
+                t_offset = scene_time - dt * (i / samples)
+
+                ro, forward, right, up = get_camera(camera_angle)
 
                 rd = (
                     forward[0] + right[0]*nx + up[0]*ny,

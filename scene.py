@@ -3,9 +3,7 @@ import config
 
 
 def get_scene(time):
-    duration = 1 / config.CAMERA["speed"]
-    phase = time / duration
-    angle = phase * 2 * math.pi
+    angle = time * 2 * math.pi
 
     scene_cfg = config.SCENE
 
