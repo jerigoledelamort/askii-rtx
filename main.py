@@ -6,7 +6,7 @@ from render import render_frame_buffer, draw_buffer
 from baker import bake_frames, save_frames
 from video_ascii import save_video_ascii
 from char_calibration import build_char_ramp
-from ui import Slider, Button, Dropdown
+from ui import Slider, Button, Dropdown, Checkbox
 
 FPS = config.WINDOW["fps"]
 
@@ -43,6 +43,8 @@ ui_font = pygame.font.SysFont("consolas", 16)
 PANEL_PADDING = 20
 SLIDER_STEP_Y = 56
 TOP_Y = 50
+CHECKBOX_START_Y = TOP_Y + SLIDER_STEP_Y * 11 + 28
+CHECKBOX_STEP_Y = 32
 
 resolution_index = INITIAL_RESOLUTION_INDEX
 RENDER_WIDTH, RENDER_HEIGHT = RESOLUTIONS[resolution_index]
@@ -80,16 +82,25 @@ def create_ui_controls(ui_width, selected_resolution):
     )
     button = Button(PANEL_PADDING, TOP_Y + SLIDER_STEP_Y * 9 + 12, slider_width, 30, "BAKE")
     exit_button = Button(PANEL_PADDING, TOP_Y + SLIDER_STEP_Y * 10 + 20, slider_width, 30, "EXIT")
-    return sliders_local, dropdown, button, exit_button
+    checkboxes_local = [
+        Checkbox(PANEL_PADDING, CHECKBOX_START_Y + CHECKBOX_STEP_Y * 0, 20, "Ambient", int(config.LIGHTING["ambient"])),
+        Checkbox(PANEL_PADDING, CHECKBOX_START_Y + CHECKBOX_STEP_Y * 1, 20, "Sky", int(config.LIGHTING["sky"])),
+        Checkbox(PANEL_PADDING, CHECKBOX_START_Y + CHECKBOX_STEP_Y * 2, 20, "Soft Shadows", int(config.LIGHTING["soft_shadows"])),
+        Checkbox(PANEL_PADDING, CHECKBOX_START_Y + CHECKBOX_STEP_Y * 3, 20, "Hard Shadows", int(config.LIGHTING["hard_shadows"])),
+        Checkbox(PANEL_PADDING, CHECKBOX_START_Y + CHECKBOX_STEP_Y * 4, 20, "Reflections", int(config.LIGHTING["reflections"])),
+        Checkbox(PANEL_PADDING, CHECKBOX_START_Y + CHECKBOX_STEP_Y * 5, 20, "Refraction", int(config.LIGHTING["refraction"])),
+        Checkbox(PANEL_PADDING, CHECKBOX_START_Y + CHECKBOX_STEP_Y * 6, 20, "Fresnel", int(config.LIGHTING["fresnel"])),
+    ]
+    return sliders_local, dropdown, button, exit_button, checkboxes_local
 
 
-sliders, resolution_dropdown, bake_button, exit_button = create_ui_controls(UI_WIDTH, resolution_index)
+sliders, resolution_dropdown, bake_button, exit_button, checkboxes = create_ui_controls(UI_WIDTH, resolution_index)
 
 
 def apply_resolution(index):
     global resolution_index, RENDER_WIDTH, RENDER_HEIGHT, UI_WIDTH, WINDOW_WIDTH
     global W, H, aspect, render_surface, ui_surface, frame_surface
-    global sliders, resolution_dropdown, bake_button, exit_button
+    global sliders, resolution_dropdown, bake_button, exit_button, checkboxes
 
     resolution_index = index
     RENDER_WIDTH, RENDER_HEIGHT = RESOLUTIONS[resolution_index]
@@ -102,7 +113,7 @@ def apply_resolution(index):
     render_surface = pygame.Surface((RENDER_WIDTH, RENDER_HEIGHT))
     ui_surface = pygame.Surface((UI_WIDTH, RENDER_HEIGHT))
     frame_surface = pygame.Surface((WINDOW_WIDTH, RENDER_HEIGHT))
-    sliders, resolution_dropdown, bake_button, exit_button = create_ui_controls(UI_WIDTH, resolution_index)
+    sliders, resolution_dropdown, bake_button, exit_button, checkboxes = create_ui_controls(UI_WIDTH, resolution_index)
 
 
 def get_scaled_layout():
@@ -163,6 +174,8 @@ while running:
                 for s in sliders:
                     s.handle(event, x_offset=RENDER_WIDTH, mouse_pos=logical_pos)
                 resolution_dropdown.handle(event, x_offset=RENDER_WIDTH, mouse_pos=logical_pos)
+                for c in checkboxes:
+                    c.handle(event, x_offset=RENDER_WIDTH, mouse_pos=logical_pos)
         elif event.type == pygame.MOUSEBUTTONUP:
             logical_pos = display_to_logical(event.pos)
             if logical_pos:
@@ -185,6 +198,13 @@ while running:
     config.BAKE["bounces"] = int(sliders[4].value)
     config.BAKE["samples"] = int(sliders[5].value)
     config.BAKE["font_size"] = int(sliders[6].value)
+    config.LIGHTING["ambient"] = int(checkboxes[0].value)
+    config.LIGHTING["sky"] = int(checkboxes[1].value)
+    config.LIGHTING["soft_shadows"] = int(checkboxes[2].value)
+    config.LIGHTING["hard_shadows"] = int(checkboxes[3].value)
+    config.LIGHTING["reflections"] = int(checkboxes[4].value)
+    config.LIGHTING["refraction"] = int(checkboxes[5].value)
+    config.LIGHTING["fresnel"] = int(checkboxes[6].value)
 
     if resolution_dropdown.changed:
         resolution_dropdown.changed = False
@@ -208,6 +228,8 @@ while running:
     for s in sliders:
         s.draw(ui_surface, ui_font)
     resolution_dropdown.draw(ui_surface, ui_font)
+    for c in checkboxes:
+        c.draw(ui_surface, ui_font)
 
     bake_button.draw(ui_surface, ui_font)
     exit_button.draw(ui_surface, ui_font)

@@ -19,6 +19,13 @@ def _render_frame_buffer_numba(
     dt,
     samples,
     bounces,
+    ambient_on,
+    sky_on,
+    soft_shadow_on,
+    hard_shadow_on,
+    reflection_on,
+    refraction_on,
+    fresnel_on,
     chars_len,
     light,
     ro,
@@ -66,6 +73,13 @@ def _render_frame_buffer_numba(
                     rd,
                     light,
                     bounces,
+                    ambient_on,
+                    sky_on,
+                    soft_shadow_on,
+                    hard_shadow_on,
+                    reflection_on,
+                    refraction_on,
+                    fresnel_on,
                     sphere_x,
                     sphere_y,
                     sphere_z,
@@ -95,6 +109,13 @@ def _render_frame_buffer_python(
     dt,
     samples,
     bounces,
+    ambient_on,
+    sky_on,
+    soft_shadow_on,
+    hard_shadow_on,
+    reflection_on,
+    refraction_on,
+    fresnel_on,
     chars_len,
     light,
     ro,
@@ -141,6 +162,13 @@ def _render_frame_buffer_python(
                     rd,
                     light,
                     bounces,
+                    ambient_on,
+                    sky_on,
+                    soft_shadow_on,
+                    hard_shadow_on,
+                    reflection_on,
+                    refraction_on,
+                    fresnel_on,
                     sphere_x,
                     sphere_y,
                     sphere_z,
@@ -165,6 +193,13 @@ def render_frame_buffer(W, H, aspect, scene_time, camera_angle, dt, chars):
     light = get_light()
     samples = config.RENDER["samples"]
     bounces = config.RENDER["bounces"]
+    ambient_on = int(config.LIGHTING["ambient"])
+    sky_on = int(config.LIGHTING["sky"])
+    soft_shadow_on = int(config.LIGHTING["soft_shadows"])
+    hard_shadow_on = int(config.LIGHTING["hard_shadows"])
+    reflection_on = int(config.LIGHTING["reflections"])
+    refraction_on = int(config.LIGHTING["refraction"])
+    fresnel_on = int(config.LIGHTING["fresnel"])
 
     ro, forward, right, up = get_camera(camera_angle)
     scene = get_scene_flat(scene_time)
@@ -178,6 +213,13 @@ def render_frame_buffer(W, H, aspect, scene_time, camera_angle, dt, chars):
         dt,
         samples,
         bounces,
+        ambient_on,
+        sky_on,
+        soft_shadow_on,
+        hard_shadow_on,
+        reflection_on,
+        refraction_on,
+        fresnel_on,
         len(chars),
         light,
         ro,

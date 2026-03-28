@@ -83,6 +83,8 @@ def reflect(rd, normal):
 @njit
 def shade(
     ro, rd, light, bounces,
+    ambient_on, sky_on, soft_shadow_on, hard_shadow_on,
+    reflection_on, refraction_on, fresnel_on,
     sphere_x, sphere_y, sphere_z, sphere_r,
     box_x, box_y, box_z, box_sx, box_sy, box_sz,
     plane_h,
@@ -95,6 +97,8 @@ def shade(
     )
 
     if t < 0.0:
+        if sky_on == 1:
+            return 0.2 + 0.5 * (rd[1] * 0.5 + 0.5)
         return 0.0
 
     hit_x = ro[0] + rd[0] * t
@@ -123,18 +127,42 @@ def shade(
         hit_z + nz * eps,
     )
 
-    t_shadow, _ = trace(
-        shadow_ro, light,
-        sphere_x, sphere_y, sphere_z, sphere_r,
-        box_x, box_y, box_z, box_sx, box_sy, box_sz,
-        plane_h,
-    )
+    shadow = 1.0
+    if soft_shadow_on == 1:
+        shadow = 0.0
+        samples = 4
+        for _ in range(samples):
+            jitter_x = light[0] + ((np.random.rand() - 0.5) * 0.1)
+            jitter_y = light[1] + ((np.random.rand() - 0.5) * 0.1)
+            jitter_z = light[2] + ((np.random.rand() - 0.5) * 0.1)
 
-    shadow = 0.0 if t_shadow > 0.0 else 1.0
+            jitter_len = math.sqrt(jitter_x * jitter_x + jitter_y * jitter_y + jitter_z * jitter_z)
+            jitter_light = (jitter_x / jitter_len, jitter_y / jitter_len, jitter_z / jitter_len)
+
+            t_shadow, _ = trace(
+                shadow_ro, jitter_light,
+                sphere_x, sphere_y, sphere_z, sphere_r,
+                box_x, box_y, box_z, box_sx, box_sy, box_sz,
+                plane_h,
+            )
+            if t_shadow < 0.0:
+                shadow += 1.0
+
+        shadow /= samples
+    elif hard_shadow_on == 1:
+        t_shadow, _ = trace(
+            shadow_ro, light,
+            sphere_x, sphere_y, sphere_z, sphere_r,
+            box_x, box_y, box_z, box_sx, box_sy, box_sz,
+            plane_h,
+        )
+        shadow = 0.0 if t_shadow > 0.0 else 1.0
 
     color = diffuse * lambert * shadow
+    if ambient_on == 1:
+        color += 0.05
 
-    if bounces > 0:
+    if reflection_on == 1 and bounces > 0:
         rx, ry, rz = reflect(rd, (nx, ny, nz))
 
         rx += roughness * ((np.random.rand() * 2.0) - 1.0) * 0.05
@@ -158,12 +186,61 @@ def shade(
 
         reflected = shade(
             reflect_ro, reflect_dir, light, bounces - 1,
+            ambient_on, sky_on, soft_shadow_on, hard_shadow_on,
+            reflection_on, refraction_on, fresnel_on,
             sphere_x, sphere_y, sphere_z, sphere_r,
             box_x, box_y, box_z, box_sx, box_sy, box_sz,
             plane_h,
         )
+        if fresnel_on == 1:
+            view_dot = -(rd[0] * nx + rd[1] * ny + rd[2] * nz)
+            if view_dot < 0.0:
+                view_dot = 0.0
+            fresnel = (1.0 - view_dot) ** 5
+        else:
+            fresnel = 0.0
 
-        color = color * (1.0 - specular) + reflected * specular
+        reflect_weight = specular + fresnel * (1.0 - specular)
+        color = color * (1.0 - reflect_weight) + reflected * reflect_weight
+
+    if refraction_on == 1 and bounces > 0:
+        eta = 1.0 / 1.3
+        cosi = -(rd[0] * nx + rd[1] * ny + rd[2] * nz)
+        k = 1.0 - eta * eta * (1.0 - cosi * cosi)
+
+        if k > 0.0:
+            refr_dir = (
+                eta * rd[0] + (eta * cosi - math.sqrt(k)) * nx,
+                eta * rd[1] + (eta * cosi - math.sqrt(k)) * ny,
+                eta * rd[2] + (eta * cosi - math.sqrt(k)) * nz,
+            )
+
+            refr_len = math.sqrt(
+                refr_dir[0] * refr_dir[0] +
+                refr_dir[1] * refr_dir[1] +
+                refr_dir[2] * refr_dir[2]
+            )
+            refr_dir = (
+                refr_dir[0] / refr_len,
+                refr_dir[1] / refr_len,
+                refr_dir[2] / refr_len,
+            )
+
+            refract_ro = (
+                hit_x - nx * eps,
+                hit_y - ny * eps,
+                hit_z - nz * eps,
+            )
+
+            refracted = shade(
+                refract_ro, refr_dir, light, bounces - 1,
+                ambient_on, sky_on, soft_shadow_on, hard_shadow_on,
+                reflection_on, refraction_on, fresnel_on,
+                sphere_x, sphere_y, sphere_z, sphere_r,
+                box_x, box_y, box_z, box_sx, box_sy, box_sz,
+                plane_h,
+            )
+            color = color * 0.8 + refracted * 0.2
 
     if color < 0.0:
         return 0.0

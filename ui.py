@@ -68,6 +68,27 @@ class Slider:
         surface.blit(text, (self.rect.x, self.rect.y - 20))
 
 
+class Checkbox:
+    def __init__(self, x, y, size, label, value):
+        self.rect = pygame.Rect(x, y, size, size)
+        self.label = label
+        self.value = value
+
+    def handle(self, event, x_offset=0, mouse_pos=None):
+        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            source_pos = mouse_pos if mouse_pos else event.pos
+            local = (source_pos[0] - x_offset, source_pos[1])
+            if self.rect.collidepoint(local):
+                self.value = 1 - self.value
+
+    def draw(self, surface, font):
+        pygame.draw.rect(surface, (80, 80, 80), self.rect)
+        if self.value:
+            pygame.draw.rect(surface, (200, 200, 200), self.rect.inflate(-6, -6))
+        text = font.render(self.label, True, (255, 255, 255))
+        surface.blit(text, (self.rect.x + 30, self.rect.y))
+
+
 class Dropdown:
     def __init__(self, x, y, w, h, options, selected_index, label):
         self.rect = pygame.Rect(x, y, w, h)

@@ -56,6 +56,16 @@ LIGHT = {
     "intensity": 1.0
 }
 
+LIGHTING = {
+    "ambient": 1,
+    "sky": 1,
+    "soft_shadows": 0,
+    "hard_shadows": 1,
+    "reflections": 1,
+    "refraction": 0,
+    "fresnel": 1,
+}
+
 # -------- SCENE --------
 # ВАЖНО:
 # base = исходное состояние
