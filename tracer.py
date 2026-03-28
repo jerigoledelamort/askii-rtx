@@ -9,6 +9,9 @@ from lighting import local_lighting, reflect_components
 from materials import MATERIALS
 
 
+HIT_BIAS = 1e-3
+
+
 @njit
 def trace_scene(ro, rd, spheres, boxes, plane_h):
     t_min = -1.0
@@ -162,12 +165,15 @@ def trace_ray(
     hard_shadow_on,
     reflection_on,
     refraction_on,
+    diffuse_gi_strength,
     spheres,
     boxes,
     plane_h,
 ):
     _ = refraction_on
-
+    if bounces <= 0:
+        return 0.0, 0.0, 0.0
+    
     t, mat_id, hit_type, hit_index = trace_scene(ro, rd, spheres, boxes, plane_h)
 
     if t < 0.0:
@@ -216,6 +222,62 @@ def trace_ray(
     b = base_b * lighting
 
     reflectivity = MATERIALS[mat_id, 3]
+    diffuse_weight = 1.0 - reflectivity
+
+    if diffuse_weight > 0.0 and bounces > 0:
+        bounce_ro = np.empty(3, dtype=np.float32)
+        bounce_ro[0] = hit_x + nx * HIT_BIAS
+        bounce_ro[1] = hit_y + ny * HIT_BIAS
+        bounce_ro[2] = hit_z + nz * HIT_BIAS
+
+        bounce_rd = np.empty(3, dtype=np.float32)
+        bounce_rd[0] = nx + (np.random.rand() - 0.5)
+        bounce_rd[1] = ny + (np.random.rand() - 0.5)
+        bounce_rd[2] = nz + (np.random.rand() - 0.5)
+
+        dl = math.sqrt(
+            bounce_rd[0] * bounce_rd[0] +
+            bounce_rd[1] * bounce_rd[1] +
+            bounce_rd[2] * bounce_rd[2]
+        )
+        if dl > 0.0:
+            inv_dl = 1.0 / dl
+            bounce_rd[0] *= inv_dl
+            bounce_rd[1] *= inv_dl
+            bounce_rd[2] *= inv_dl
+
+        n_dot_d = bounce_rd[0] * nx + bounce_rd[1] * ny + bounce_rd[2] * nz
+        if n_dot_d < 0.0:
+            bounce_rd[0] = -bounce_rd[0]
+            bounce_rd[1] = -bounce_rd[1]
+            bounce_rd[2] = -bounce_rd[2]
+
+        bounce_r, bounce_g, bounce_b = trace_ray(
+            bounce_ro,
+            bounce_rd,
+            lx,
+            ly,
+            lz,
+            bounces - 1,
+            ambient_on,
+            sky_on,
+            soft_shadow_on,
+            hard_shadow_on,
+            reflection_on,
+            refraction_on,
+            diffuse_gi_strength,
+            spheres,
+            boxes,
+            plane_h,
+        )
+
+        r += base_r * bounce_r * diffuse_gi_strength
+        g += base_g * bounce_g * diffuse_gi_strength
+        b += base_b * bounce_b * diffuse_gi_strength
+
+    r *= diffuse_weight
+    g *= diffuse_weight
+    b *= diffuse_weight
 
     if reflection_on == 1 and bounces > 0 and reflectivity > 0.0:
         rx, ry, rz = reflect_components(rd[0], rd[1], rd[2], nx, ny, nz)
@@ -223,9 +285,9 @@ def trace_ray(
         reflected_ro = np.empty(3, dtype=np.float32)
         reflected_rd = np.empty(3, dtype=np.float32)
 
-        reflected_ro[0] = hit_x + nx * 1e-3
-        reflected_ro[1] = hit_y + ny * 1e-3
-        reflected_ro[2] = hit_z + nz * 1e-3
+        reflected_ro[0] = hit_x + nx * HIT_BIAS
+        reflected_ro[1] = hit_y + ny * HIT_BIAS
+        reflected_ro[2] = hit_z + nz * HIT_BIAS
 
         reflected_rd[0] = rx
         reflected_rd[1] = ry
@@ -244,6 +306,7 @@ def trace_ray(
             hard_shadow_on,
             reflection_on,
             refraction_on,
+            diffuse_gi_strength,
             spheres,
             boxes,
             plane_h,
@@ -254,9 +317,8 @@ def trace_ray(
         reflected_g *= base_g * 0.7
         reflected_b *= base_b * 0.7
 
-        keep = 1.0 - reflectivity
-        r = r * keep + reflected_r * reflectivity
-        g = g * keep + reflected_g * reflectivity
-        b = b * keep + reflected_b * reflectivity
+        r = r + reflected_r * reflectivity
+        g = g + reflected_g * reflectivity
+        b = b + reflected_b * reflectivity
 
     return r, g, b

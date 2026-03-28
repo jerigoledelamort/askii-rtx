@@ -34,6 +34,7 @@ def render_frame_buffer_numba(
     spheres,
     boxes,
     plane_h,
+    diffuse_gi_strength,
     exposure,
     gamma,
 ):
@@ -75,6 +76,7 @@ def render_frame_buffer_numba(
                     hard_shadow_on,
                     reflection_on,
                     refraction_on,
+                    diffuse_gi_strength,
                     spheres,
                     boxes,
                     plane_h,
@@ -149,6 +151,7 @@ def render_frame_buffer(W, H, aspect, scene_time, camera_angle, dt, chars):
 
     exposure = np.float32(config.RENDER.get("exposure", 1.0))
     gamma = np.float32(config.RENDER.get("gamma", 1.0))
+    diffuse_gi_strength = np.float32(config.RENDER.get("diffuse_gi_strength", 0.4))
 
     ro, forward, right, up = get_camera(camera_angle)
     spheres, boxes, plane_y = get_scene_flat(scene_time)
@@ -176,6 +179,7 @@ def render_frame_buffer(W, H, aspect, scene_time, camera_angle, dt, chars):
         spheres,
         boxes,
         plane_y,
+        diffuse_gi_strength,
         exposure,
         gamma,
     )

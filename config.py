@@ -31,6 +31,7 @@ RENDER = {
     "samples": 1,
     "exposure": 1.0,
     "gamma": 1.0,
+    "diffuse_gi_strength": 0.4,
 }
 
 # -------- FONT --------
