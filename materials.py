@@ -1,17 +1,12 @@
-MATERIALS = {
-    0: {  # плоскость
-        "diffuse": 0.8,
-        "specular": 0.0,
-        "roughness": 1.0
-    },
-    1: {  # сфера
-        "diffuse": 0.7,
-        "specular": 0.3,
-        "roughness": 0.3
-    },
-    2: {  # куб
-        "diffuse": 0.6,
-        "specular": 0.6,
-        "roughness": 0.1
-    }
-}
+import numpy as np
+
+
+# rows: [diffuse, specular, roughness], index == mat_id
+MATERIALS = np.array(
+    [
+        [0.8, 0.0, 1.0],  # plane
+        [0.7, 0.3, 0.3],  # sphere
+        [0.6, 0.6, 0.1],  # box
+    ],
+    dtype=np.float32,
+)

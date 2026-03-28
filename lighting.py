@@ -1,7 +1,9 @@
 import math
+import numpy as np
 from numba import njit
 
 import config
+from materials import MATERIALS
 from tracer import trace
 
 
@@ -12,11 +14,17 @@ def get_light():
 
 
 @njit
-def get_normal(hit_x, hit_y, hit_z, mat_id, sphere_x, sphere_y, sphere_z, box_x, box_y, box_z, box_sx, box_sy, box_sz):
+def get_normal(
+    hit_x, hit_y, hit_z, mat_id,
+    sphere_x, sphere_y, sphere_z,
+    box_x, box_y, box_z,
+    box_sx, box_sy, box_sz
+):
     if mat_id == 1:
         nx = hit_x - sphere_x
         ny = hit_y - sphere_y
         nz = hit_z - sphere_z
+
     elif mat_id == 2:
         min_x = box_x - box_sx
         max_x = box_x + box_sx
@@ -32,29 +40,30 @@ def get_normal(hit_x, hit_y, hit_z, mat_id, sphere_x, sphere_y, sphere_z, box_x,
         dz_min = abs(hit_z - min_z)
         dz_max = abs(max_z - hit_z)
 
-        best = dx_min
+        m = dx_min
         nx, ny, nz = -1.0, 0.0, 0.0
 
-        if dx_max < best:
-            best = dx_max
+        if dx_max < m:
+            m = dx_max
             nx, ny, nz = 1.0, 0.0, 0.0
-        if dy_min < best:
-            best = dy_min
+        if dy_min < m:
+            m = dy_min
             nx, ny, nz = 0.0, -1.0, 0.0
-        if dy_max < best:
-            best = dy_max
+        if dy_max < m:
+            m = dy_max
             nx, ny, nz = 0.0, 1.0, 0.0
-        if dz_min < best:
-            best = dz_min
+        if dz_min < m:
+            m = dz_min
             nx, ny, nz = 0.0, 0.0, -1.0
-        if dz_max < best:
+        if dz_max < m:
             nx, ny, nz = 0.0, 0.0, 1.0
+
     else:
         nx, ny, nz = 0.0, 1.0, 0.0
 
-    n_len = math.sqrt(nx * nx + ny * ny + nz * nz)
-    if n_len > 0.0:
-        inv = 1.0 / n_len
+    length = math.sqrt(nx * nx + ny * ny + nz * nz)
+    if length > 0.0:
+        inv = 1.0 / length
         nx *= inv
         ny *= inv
         nz *= inv
@@ -63,46 +72,25 @@ def get_normal(hit_x, hit_y, hit_z, mat_id, sphere_x, sphere_y, sphere_z, box_x,
 
 
 @njit
-def reflect(rd, n):
-    d = rd[0] * n[0] + rd[1] * n[1] + rd[2] * n[2]
-    return (
-        rd[0] - 2.0 * d * n[0],
-        rd[1] - 2.0 * d * n[1],
-        rd[2] - 2.0 * d * n[2],
-    )
+def reflect(rd, normal):
+    dot = rd[0]*normal[0] + rd[1]*normal[1] + rd[2]*normal[2]
+    rx = rd[0] - 2.0 * dot * normal[0]
+    ry = rd[1] - 2.0 * dot * normal[1]
+    rz = rd[2] - 2.0 * dot * normal[2]
+    return rx, ry, rz
 
 
 @njit
 def shade(
-    ro,
-    rd,
-    light,
-    bounces,
-    sphere_x,
-    sphere_y,
-    sphere_z,
-    sphere_r,
-    box_x,
-    box_y,
-    box_z,
-    box_sx,
-    box_sy,
-    box_sz,
+    ro, rd, light, bounces,
+    sphere_x, sphere_y, sphere_z, sphere_r,
+    box_x, box_y, box_z, box_sx, box_sy, box_sz,
     plane_h,
 ):
     t, mat_id = trace(
-        ro,
-        rd,
-        sphere_x,
-        sphere_y,
-        sphere_z,
-        sphere_r,
-        box_x,
-        box_y,
-        box_z,
-        box_sx,
-        box_sy,
-        box_sz,
+        ro, rd,
+        sphere_x, sphere_y, sphere_z, sphere_r,
+        box_x, box_y, box_z, box_sx, box_sy, box_sz,
         plane_h,
     )
 
@@ -114,24 +102,19 @@ def shade(
     hit_z = ro[2] + rd[2] * t
 
     nx, ny, nz = get_normal(
-        hit_x,
-        hit_y,
-        hit_z,
-        mat_id,
-        sphere_x,
-        sphere_y,
-        sphere_z,
-        box_x,
-        box_y,
-        box_z,
-        box_sx,
-        box_sy,
-        box_sz,
+        hit_x, hit_y, hit_z, mat_id,
+        sphere_x, sphere_y, sphere_z,
+        box_x, box_y, box_z,
+        box_sx, box_sy, box_sz,
     )
 
     lambert = nx * light[0] + ny * light[1] + nz * light[2]
     if lambert < 0.0:
         lambert = 0.0
+
+    diffuse = MATERIALS[mat_id, 0]
+    specular = MATERIALS[mat_id, 1]
+    roughness = MATERIALS[mat_id, 2]
 
     eps = 1e-3
     shadow_ro = (
@@ -139,53 +122,52 @@ def shade(
         hit_y + ny * eps,
         hit_z + nz * eps,
     )
+
     t_shadow, _ = trace(
-        shadow_ro,
-        light,
-        sphere_x,
-        sphere_y,
-        sphere_z,
-        sphere_r,
-        box_x,
-        box_y,
-        box_z,
-        box_sx,
-        box_sy,
-        box_sz,
+        shadow_ro, light,
+        sphere_x, sphere_y, sphere_z, sphere_r,
+        box_x, box_y, box_z, box_sx, box_sy, box_sz,
         plane_h,
     )
+
     shadow = 0.0 if t_shadow > 0.0 else 1.0
 
-    color = lambert * shadow
+    color = diffuse * lambert * shadow
 
     if bounces > 0:
-        reflect_dir = reflect(rd, (nx, ny, nz))
+        rx, ry, rz = reflect(rd, (nx, ny, nz))
+
+        rx += roughness * ((np.random.rand() * 2.0) - 1.0) * 0.05
+        ry += roughness * ((np.random.rand() * 2.0) - 1.0) * 0.05
+        rz += roughness * ((np.random.rand() * 2.0) - 1.0) * 0.05
+
+        r_len = math.sqrt(rx * rx + ry * ry + rz * rz)
+        if r_len > 0.0:
+            inv = 1.0 / r_len
+            rx *= inv
+            ry *= inv
+            rz *= inv
+
+        reflect_dir = (rx, ry, rz)
+
         reflect_ro = (
             hit_x + nx * eps,
             hit_y + ny * eps,
             hit_z + nz * eps,
         )
+
         reflected = shade(
-            reflect_ro,
-            reflect_dir,
-            light,
-            bounces - 1,
-            sphere_x,
-            sphere_y,
-            sphere_z,
-            sphere_r,
-            box_x,
-            box_y,
-            box_z,
-            box_sx,
-            box_sy,
-            box_sz,
+            reflect_ro, reflect_dir, light, bounces - 1,
+            sphere_x, sphere_y, sphere_z, sphere_r,
+            box_x, box_y, box_z, box_sx, box_sy, box_sz,
             plane_h,
         )
-        color = color * 0.8 + reflected * 0.2
+
+        color = color * (1.0 - specular) + reflected * specular
 
     if color < 0.0:
         return 0.0
     if color > 1.0:
         return 1.0
+
     return color

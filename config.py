@@ -34,7 +34,7 @@ RENDER = {
 # -------- FONT --------
 FONT = {
     "name": "Consolas",
-    "size": 4
+    "size": 6
 }
 
 # -------- CAMERA --------
