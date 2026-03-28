@@ -18,7 +18,7 @@ def bake_frames(W, H, aspect, chars):
         camera_angle = t * config.CAMERA["speed"] * 2 * math.pi
         dt = 1/60
 
-        buffer = render_frame_buffer(
+        buffer_idx, buffer_rgb = render_frame_buffer(
             W, H, aspect,
             scene_time,
             camera_angle,
@@ -26,7 +26,7 @@ def bake_frames(W, H, aspect, chars):
             chars
         )
 
-        frames.append(buffer)
+        frames.append((buffer_idx, buffer_rgb))
         print(f"[BAKE] {i+1}/{total_frames}")
 
     return frames

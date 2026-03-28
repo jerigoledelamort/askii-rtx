@@ -9,8 +9,9 @@ from render import draw_buffer
 
 def save_video_ascii(frames, chars, char_cache, char_w, char_h):
     # --- размеры ---
-    h = len(frames[0])
-    w = len(frames[0][0])
+    first_idx = frames[0][0]
+    h = len(first_idx)
+    w = len(first_idx[0])
 
     width = w * char_w
     height = h * char_h
@@ -31,11 +32,11 @@ def save_video_ascii(frames, chars, char_cache, char_w, char_h):
         ffmpeg_params=["-pix_fmt", "yuv420p"]
     )
 
-    for frame in frames:
+    for frame_idx, frame_rgb in frames:
         surface.fill((0, 0, 0))
 
         # 🔥 ВАЖНО: используем ТОТ ЖЕ рендер
-        draw_buffer(surface, frame, chars, char_cache, char_w, char_h)
+        draw_buffer(surface, frame_idx, chars, char_cache, char_w, char_h, frame_rgb)
 
         # --- surface → numpy ---
         img = pygame.surfarray.array3d(surface)

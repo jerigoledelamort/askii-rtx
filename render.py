@@ -1,5 +1,6 @@
 import math
 import numpy as np
+import pygame
 from numba import njit
 
 import config
@@ -33,12 +34,17 @@ def render_frame_buffer_numba(
     spheres,
     boxes,
     plane_h,
+    exposure,
+    gamma,
 ):
-    buffer = np.zeros((H, W), dtype=np.int32)
+    buffer_idx = np.zeros((H, W), dtype=np.int32)
+    buffer_rgb = np.zeros((H, W, 3), dtype=np.float32)
 
     for y in range(H):
         for x in range(W):
-            color = 0.0
+            r = 0.0
+            g = 0.0
+            b = 0.0
 
             for _ in range(samples):
                 nx = ((x + np.random.rand()) / W) * 2.0 - 1.0
@@ -56,7 +62,7 @@ def render_frame_buffer_numba(
                 rd[1] *= inv
                 rd[2] *= inv
 
-                color += trace_ray(
+                cr, cg, cb = trace_ray(
                     ro,
                     rd,
                     lx,
@@ -74,15 +80,56 @@ def render_frame_buffer_numba(
                     plane_h,
                 )
 
-            color /= samples
-            if color < 0.0:
-                color = 0.0
-            elif color > 1.0:
-                color = 1.0
+                r += cr
+                g += cg
+                b += cb
 
-            buffer[y, x] = int(color * (chars_len - 1))
+            inv_samples = 1.0 / samples
+            r *= inv_samples
+            g *= inv_samples
+            b *= inv_samples
 
-    return buffer
+            r *= exposure
+            g *= exposure
+            b *= exposure
+
+            if gamma != 1.0:
+                r = r ** gamma
+                g = g ** gamma
+                b = b ** gamma
+
+            luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b
+            if luminance < 0.0:
+                luminance = 0.0
+            elif luminance > 1.0:
+                luminance = 1.0
+
+            max_c = max(r, g, b, 1e-6)
+            nr = r / max_c
+            ng = g / max_c
+            nb = b / max_c
+
+            if nr < 0.0:
+                nr = 0.0
+            elif nr > 1.0:
+                nr = 1.0
+
+            if ng < 0.0:
+                ng = 0.0
+            elif ng > 1.0:
+                ng = 1.0
+
+            if nb < 0.0:
+                nb = 0.0
+            elif nb > 1.0:
+                nb = 1.0
+
+            buffer_idx[y, x] = int(luminance * (chars_len - 1))
+            buffer_rgb[y, x, 0] = nr
+            buffer_rgb[y, x, 1] = ng
+            buffer_rgb[y, x, 2] = nb
+
+    return buffer_idx, buffer_rgb
 
 
 def render_frame_buffer(W, H, aspect, scene_time, camera_angle, dt, chars):
@@ -99,6 +146,9 @@ def render_frame_buffer(W, H, aspect, scene_time, camera_angle, dt, chars):
     hard_shadow_on = int(config.LIGHTING["hard_shadows"])
     reflection_on = int(config.LIGHTING["reflections"])
     refraction_on = int(config.LIGHTING["refraction"])
+
+    exposure = np.float32(config.RENDER.get("exposure", 1.0))
+    gamma = np.float32(config.RENDER.get("gamma", 1.0))
 
     ro, forward, right, up = get_camera(camera_angle)
     spheres, boxes, plane_y = get_scene_flat(scene_time)
@@ -126,11 +176,32 @@ def render_frame_buffer(W, H, aspect, scene_time, camera_angle, dt, chars):
         spheres,
         boxes,
         plane_y,
+        exposure,
+        gamma,
     )
 
 
-def draw_buffer(surface, buffer, chars, char_cache, char_w, char_h):
-    for y, row in enumerate(buffer):
+def draw_buffer(surface, buffer_idx, chars, char_cache, char_w, char_h, buffer_rgb=None):
+    if buffer_rgb is None:
+        for y, row in enumerate(buffer_idx):
+            for x, idx in enumerate(row):
+                char = chars[idx]
+                surface.blit(char_cache[char], (x * char_w, y * char_h))
+        return
+
+    for y, row in enumerate(buffer_idx):
         for x, idx in enumerate(row):
             char = chars[idx]
-            surface.blit(char_cache[char], (x * char_w, y * char_h))
+            r = int(buffer_rgb[y, x, 0] * 255.0)
+            g = int(buffer_rgb[y, x, 1] * 255.0)
+            b = int(buffer_rgb[y, x, 2] * 255.0)
+            glyph = char_cache.get((char, r, g, b))
+            if glyph is None:
+                glyph = pygame_font_render(char_cache, char, r, g, b)
+                char_cache[(char, r, g, b)] = glyph
+            surface.blit(glyph, (x * char_w, y * char_h))
+
+
+def pygame_font_render(char_cache, char, r, g, b):
+    font = char_cache["__font__"]
+    return font.render(char, False, (r, g, b))

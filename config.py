@@ -28,7 +28,9 @@ BAKE = {
 RENDER = {
     "chars": " .'`^\",:;Il!i~+_-?][}{1)(|\\/tfjrxnuvczXYUJCLQ0OZmwqpdbkhao*#MW&8%B@$",
     "bounces": 1,
-    "samples": 1
+    "samples": 1,
+    "exposure": 1.0,
+    "gamma": 1.0,
 }
 
 # -------- FONT --------

@@ -172,8 +172,9 @@ def trace_ray(
 
     if t < 0.0:
         if sky_on == 1:
-            return 0.2 + 0.5 * (rd[1] * 0.5 + 0.5)
-        return 0.0
+            sky = 0.2 + 0.5 * (rd[1] * 0.5 + 0.5)
+            return sky, sky, sky
+        return 0.0, 0.0, 0.0
 
     hit_x = ro[0] + rd[0] * t
     hit_y = ro[1] + rd[1] * t
@@ -202,10 +203,17 @@ def trace_ray(
         plane_h,
     )
 
-    local_color = local_lighting(
+    lighting = local_lighting(
         rd[0], rd[1], rd[2], nx, ny, nz, lx, ly, lz, mat_id, lambert, shadow, ambient_on
     )
-    color = local_color
+
+    base_r = MATERIALS[mat_id, 6]
+    base_g = MATERIALS[mat_id, 7]
+    base_b = MATERIALS[mat_id, 8]
+
+    r = base_r * lighting
+    g = base_g * lighting
+    b = base_b * lighting
 
     reflectivity = MATERIALS[mat_id, 3]
 
@@ -223,7 +231,7 @@ def trace_ray(
         reflected_rd[1] = ry
         reflected_rd[2] = rz
 
-        reflected = trace_ray(
+        reflected_r, reflected_g, reflected_b = trace_ray(
             reflected_ro,
             reflected_rd,
             lx,
@@ -241,6 +249,14 @@ def trace_ray(
             plane_h,
         )
 
-        color = (1.0 - reflectivity) * local_color + reflectivity * reflected
+        # attenuation
+        reflected_r *= base_r * 0.7
+        reflected_g *= base_g * 0.7
+        reflected_b *= base_b * 0.7
 
-    return color
+        keep = 1.0 - reflectivity
+        r = r * keep + reflected_r * reflectivity
+        g = g * keep + reflected_g * reflectivity
+        b = b * keep + reflected_b * reflectivity
+
+    return r, g, b

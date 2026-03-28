@@ -38,8 +38,8 @@ chars = build_char_ramp(config.RENDER["chars"], font)
 char_w, char_h = font.size("A")
 
 char_cache = {
-    c: font.render(c, False, (255, 255, 255))
-    for c in chars
+    "__font__": font,
+    **{c: font.render(c, False, (255, 255, 255)) for c in chars},
 }
 
 mode = config.MODE["type"]
@@ -259,12 +259,12 @@ while running:
     camera_angle = math.sin(scene_time * config.CAMERA["speed"]) * 0.5
 
     if mode == "realtime":
-        buffer = render_frame_buffer(W, H, aspect, scene_time, camera_angle, dt, chars)
-        draw_buffer(render_surface, buffer, chars, char_cache, char_w, char_h)
+        buffer_idx, buffer_rgb = render_frame_buffer(W, H, aspect, scene_time, camera_angle, dt, chars)
+        draw_buffer(render_surface, buffer_idx, chars, char_cache, char_w, char_h, buffer_rgb)
 
     elif mode == "playback":
-        buffer = frames[frame_index]
-        draw_buffer(render_surface, buffer, chars, char_cache, char_w, char_h)
+        buffer_idx, buffer_rgb = frames[frame_index]
+        draw_buffer(render_surface, buffer_idx, chars, char_cache, char_w, char_h, buffer_rgb)
 
         frame_index += 1
         if frame_index >= len(frames):
