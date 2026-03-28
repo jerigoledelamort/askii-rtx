@@ -12,6 +12,8 @@ FPS = config.WINDOW["fps"]
 
 RESOLUTIONS = [(640, 360), (800, 450), (1280, 720), (1920, 1080), (2560, 1440)]
 INITIAL_RESOLUTION_INDEX = 2
+UI_WIDTH = 320
+SCROLL_SPEED = 30
 
 pygame.init()
 screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
@@ -48,15 +50,14 @@ CHECKBOX_STEP_Y = 32
 
 resolution_index = INITIAL_RESOLUTION_INDEX
 RENDER_WIDTH, RENDER_HEIGHT = RESOLUTIONS[resolution_index]
-UI_WIDTH = int(RENDER_WIDTH * 0.25)
-WINDOW_WIDTH = RENDER_WIDTH + UI_WIDTH
 W = RENDER_WIDTH // char_w
 H = RENDER_HEIGHT // char_h
 aspect = (W * char_w) / (H * char_h)
 
+scroll_offset = 0
+
 render_surface = pygame.Surface((RENDER_WIDTH, RENDER_HEIGHT))
 ui_surface = pygame.Surface((UI_WIDTH, RENDER_HEIGHT))
-frame_surface = pygame.Surface((WINDOW_WIDTH, RENDER_HEIGHT))
 
 
 def create_ui_controls(ui_width, selected_resolution):
@@ -94,45 +95,76 @@ def create_ui_controls(ui_width, selected_resolution):
     return sliders_local, dropdown, button, exit_button, checkboxes_local
 
 
+def get_ui_content_height(sliders_local, dropdown_local, button_local, exit_button_local, checkboxes_local):
+    bottom = 0
+
+    for s in sliders_local:
+        bottom = max(bottom, s.rect.bottom)
+
+    dropdown_bottom = dropdown_local.rect.bottom
+    if dropdown_local.expanded:
+        dropdown_bottom += dropdown_local.rect.h * len(dropdown_local.options)
+    bottom = max(bottom, dropdown_bottom)
+
+    bottom = max(bottom, button_local.rect.bottom)
+    bottom = max(bottom, exit_button_local.rect.bottom)
+
+    for c in checkboxes_local:
+        bottom = max(bottom, c.rect.bottom)
+
+    return bottom + PANEL_PADDING
+
+
+def clamp_scroll():
+    global scroll_offset
+    max_scroll = max(0, get_ui_content_height(sliders, resolution_dropdown, bake_button, exit_button, checkboxes) - RENDER_HEIGHT)
+    scroll_offset = max(0, min(scroll_offset, max_scroll))
+
+
 sliders, resolution_dropdown, bake_button, exit_button, checkboxes = create_ui_controls(UI_WIDTH, resolution_index)
 
 
 def apply_resolution(index):
-    global resolution_index, RENDER_WIDTH, RENDER_HEIGHT, UI_WIDTH, WINDOW_WIDTH
-    global W, H, aspect, render_surface, ui_surface, frame_surface
-    global sliders, resolution_dropdown, bake_button, exit_button, checkboxes
+    global resolution_index, RENDER_WIDTH, RENDER_HEIGHT
+    global W, H, aspect, render_surface, ui_surface
+    global sliders, resolution_dropdown, bake_button, exit_button, checkboxes, scroll_offset
 
     resolution_index = index
     RENDER_WIDTH, RENDER_HEIGHT = RESOLUTIONS[resolution_index]
-    UI_WIDTH = int(RENDER_WIDTH * 0.25)
-    WINDOW_WIDTH = RENDER_WIDTH + UI_WIDTH
     W = RENDER_WIDTH // char_w
     H = RENDER_HEIGHT // char_h
     aspect = (W * char_w) / (H * char_h)
 
     render_surface = pygame.Surface((RENDER_WIDTH, RENDER_HEIGHT))
     ui_surface = pygame.Surface((UI_WIDTH, RENDER_HEIGHT))
-    frame_surface = pygame.Surface((WINDOW_WIDTH, RENDER_HEIGHT))
     sliders, resolution_dropdown, bake_button, exit_button, checkboxes = create_ui_controls(UI_WIDTH, resolution_index)
+    scroll_offset = 0
+    clamp_scroll()
 
 
-def get_scaled_layout():
-    scale = min(DISPLAY_WIDTH / WINDOW_WIDTH, DISPLAY_HEIGHT / RENDER_HEIGHT)
-    scaled_w = int(WINDOW_WIDTH * scale)
+def get_render_layout():
+    available_width = max(1, DISPLAY_WIDTH - UI_WIDTH)
+    scale = min(available_width / RENDER_WIDTH, DISPLAY_HEIGHT / RENDER_HEIGHT)
+    scaled_w = int(RENDER_WIDTH * scale)
     scaled_h = int(RENDER_HEIGHT * scale)
-    offset_x = (DISPLAY_WIDTH - scaled_w) // 2
-    offset_y = (DISPLAY_HEIGHT - scaled_h) // 2
-    return scale, scaled_w, scaled_h, offset_x, offset_y
+    render_x = (available_width - scaled_w) // 2
+    render_y = (DISPLAY_HEIGHT - scaled_h) // 2
+    return scale, scaled_w, scaled_h, render_x, render_y
 
 
-def display_to_logical(pos):
-    scale, scaled_w, scaled_h, offset_x, offset_y = get_scaled_layout()
+def display_to_render_logical(pos):
+    scale, scaled_w, scaled_h, render_x, render_y = get_render_layout()
     px, py = pos
-    if px < offset_x or py < offset_y or px >= offset_x + scaled_w or py >= offset_y + scaled_h:
+    if px < render_x or py < render_y or px >= render_x + scaled_w or py >= render_y + scaled_h:
         return None
-    local_x = int((px - offset_x) / scale)
-    local_y = int((py - offset_y) / scale)
+    local_x = int((px - render_x) / scale)
+    local_y = int((py - render_y) / scale)
     return local_x, local_y
+
+
+def is_inside_ui(pos):
+    return pos[0] >= DISPLAY_WIDTH - UI_WIDTH
+
 
 # -------- INIT --------
 
@@ -154,7 +186,7 @@ while running:
     dt = clock.tick(FPS) / 1000.0
     dt = min(dt, 0.033)
 
-    scene_time += dt  # 🔥 сцена живёт отдельно
+    scene_time += dt
 
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
@@ -166,26 +198,36 @@ while running:
                 pygame.display.toggle_fullscreen()
                 DISPLAY_WIDTH, DISPLAY_HEIGHT = screen.get_size()
 
+        if event.type == pygame.MOUSEWHEEL:
+            mouse_pos = pygame.mouse.get_pos()
+            if is_inside_ui(mouse_pos):
+                scroll_offset -= event.y * SCROLL_SPEED
+                clamp_scroll()
+
         if event.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEMOTION):
-            logical_pos = display_to_logical(event.pos)
-            if logical_pos and logical_pos[0] >= RENDER_WIDTH:
-                bake_button.handle(event, x_offset=RENDER_WIDTH, mouse_pos=logical_pos)
-                exit_button.handle(event, x_offset=RENDER_WIDTH, mouse_pos=logical_pos)
+            if hasattr(event, "pos") and is_inside_ui(event.pos):
+                ui_mouse_pos = (event.pos[0] - (DISPLAY_WIDTH - UI_WIDTH), event.pos[1])
+                bake_button.handle(event, mouse_pos=ui_mouse_pos, scroll_offset=scroll_offset)
+                exit_button.handle(event, mouse_pos=ui_mouse_pos, scroll_offset=scroll_offset)
                 for s in sliders:
-                    s.handle(event, x_offset=RENDER_WIDTH, mouse_pos=logical_pos)
-                resolution_dropdown.handle(event, x_offset=RENDER_WIDTH, mouse_pos=logical_pos)
+                    s.handle(event, mouse_pos=ui_mouse_pos, scroll_offset=scroll_offset)
+                resolution_dropdown.handle(event, mouse_pos=ui_mouse_pos, scroll_offset=scroll_offset)
                 for c in checkboxes:
-                    c.handle(event, x_offset=RENDER_WIDTH, mouse_pos=logical_pos)
+                    c.handle(event, mouse_pos=ui_mouse_pos, scroll_offset=scroll_offset)
         elif event.type == pygame.MOUSEBUTTONUP:
-            logical_pos = display_to_logical(event.pos)
-            if logical_pos:
-                bake_button.handle(event, x_offset=RENDER_WIDTH, mouse_pos=logical_pos)
-                exit_button.handle(event, x_offset=RENDER_WIDTH, mouse_pos=logical_pos)
-                resolution_dropdown.handle(event, x_offset=RENDER_WIDTH, mouse_pos=logical_pos)
+            if hasattr(event, "pos") and is_inside_ui(event.pos):
+                ui_mouse_pos = (event.pos[0] - (DISPLAY_WIDTH - UI_WIDTH), event.pos[1])
+                bake_button.handle(event, mouse_pos=ui_mouse_pos, scroll_offset=scroll_offset)
+                exit_button.handle(event, mouse_pos=ui_mouse_pos, scroll_offset=scroll_offset)
+                resolution_dropdown.handle(event, mouse_pos=ui_mouse_pos, scroll_offset=scroll_offset)
             else:
                 resolution_dropdown.expanded = False
             for s in sliders:
-                s.handle(event, x_offset=RENDER_WIDTH, mouse_pos=logical_pos)
+                if hasattr(event, "pos") and is_inside_ui(event.pos):
+                    ui_mouse_pos = (event.pos[0] - (DISPLAY_WIDTH - UI_WIDTH), event.pos[1])
+                else:
+                    ui_mouse_pos = None
+                s.handle(event, mouse_pos=ui_mouse_pos, scroll_offset=scroll_offset)
 
     render_surface.fill((0, 0, 0))
     ui_surface.fill((24, 24, 24))
@@ -210,7 +252,8 @@ while running:
         resolution_dropdown.changed = False
         apply_resolution(resolution_dropdown.selected_index)
 
-    # 🔥 только камера зависит от speed
+    clamp_scroll()
+
     camera_angle += config.CAMERA["speed"] * dt * 2 * 3.1415926
 
     if mode == "realtime":
@@ -226,13 +269,13 @@ while running:
             frame_index = 0
 
     for s in sliders:
-        s.draw(ui_surface, ui_font)
-    resolution_dropdown.draw(ui_surface, ui_font)
+        s.draw(ui_surface, ui_font, -scroll_offset)
+    resolution_dropdown.draw(ui_surface, ui_font, -scroll_offset)
     for c in checkboxes:
-        c.draw(ui_surface, ui_font)
+        c.draw(ui_surface, ui_font, -scroll_offset)
 
-    bake_button.draw(ui_surface, ui_font)
-    exit_button.draw(ui_surface, ui_font)
+    bake_button.draw(ui_surface, ui_font, -scroll_offset)
+    exit_button.draw(ui_surface, ui_font, -scroll_offset)
     if bake_button.clicked:
         bake_button.clicked = False
 
@@ -257,12 +300,11 @@ while running:
         exit_button.clicked = False
         running = False
 
-    frame_surface.blit(render_surface, (0, 0))
-    frame_surface.blit(ui_surface, (RENDER_WIDTH, 0))
-    scale, scaled_w, scaled_h, offset_x, offset_y = get_scaled_layout()
-    scaled = pygame.transform.scale(frame_surface, (scaled_w, scaled_h))
     screen.fill((0, 0, 0))
-    screen.blit(scaled, (offset_x, offset_y))
+    scale, scaled_w, scaled_h, render_x, render_y = get_render_layout()
+    scaled_render = pygame.transform.scale(render_surface, (scaled_w, scaled_h))
+    screen.blit(scaled_render, (render_x, render_y))
+    screen.blit(ui_surface, (DISPLAY_WIDTH - UI_WIDTH, 0))
     pygame.display.flip()
 
 pygame.quit()
