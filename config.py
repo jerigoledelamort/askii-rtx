@@ -27,14 +27,14 @@ BAKE = {
 # -------- RENDER --------
 RENDER = {
     "chars": " .'`^\",:;Il!i~+_-?][}{1)(|\\/tfjrxnuvczXYUJCLQ0OZmwqpdbkhao*#MW&8%B@$",
-    "bounces": 1,
-    "samples": 1
+    "bounces": 12,
+    "samples": 6
 }
 
 # -------- FONT --------
 FONT = {
     "name": "Consolas",
-    "size": 12
+    "size": 4
 }
 
 # -------- CAMERA --------
@@ -66,7 +66,7 @@ SCENE = {
 
     "sphere": {
         "base": {
-            "pos": (0.5, 0, 0),     # начальная позиция
+            "pos": (1.0, 0, 0),     # начальная позиция
             "radius": 0.5         # базовый радиус
         },
 
@@ -89,7 +89,7 @@ SCENE = {
 
     "box": {
         "base": {
-            "pos": (-0.5, 0, 0),
+            "pos": (-1.0, 0, 0),
             "size": (0.5, 0.5, 0.5)
         },
 

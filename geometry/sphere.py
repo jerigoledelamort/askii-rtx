@@ -1,15 +1,29 @@
 import math
+from numba import njit
 
-def hit_sphere(ro, rd, center, radius):
-    oc = tuple(ro[i] - center[i] for i in range(3))
 
-    a = sum(rd[i]*rd[i] for i in range(3))
-    b = 2.0 * sum(oc[i]*rd[i] for i in range(3))
-    c = sum(oc[i]*oc[i] for i in range(3)) - radius*radius
+@njit
+def hit_sphere(ro, rd, cx, cy, cz, radius):
+    ocx = ro[0] - cx
+    ocy = ro[1] - cy
+    ocz = ro[2] - cz
 
-    disc = b*b - 4*a*c
-    if disc < 0:
-        return None
+    a = rd[0] * rd[0] + rd[1] * rd[1] + rd[2] * rd[2]
+    b = 2.0 * (ocx * rd[0] + ocy * rd[1] + ocz * rd[2])
+    c = ocx * ocx + ocy * ocy + ocz * ocz - radius * radius
 
-    t = (-b - math.sqrt(disc)) / (2*a)
-    return t if t > 0 else None
+    disc = b * b - 4.0 * a * c
+    if disc < 0.0:
+        return -1.0
+
+    sqrt_disc = math.sqrt(disc)
+
+    t1 = (-b - sqrt_disc) / (2.0 * a)
+    t2 = (-b + sqrt_disc) / (2.0 * a)
+
+    if t1 > 0.0:
+        return t1
+    if t2 > 0.0:
+        return t2
+
+    return -1.0

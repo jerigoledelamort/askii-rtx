@@ -1,96 +1,191 @@
 import math
-from tracer import trace
+from numba import njit
+
 import config
-from scene import get_scene
+from tracer import trace
+
 
 def get_light():
     light = config.LIGHT["direction"]
-    l = math.sqrt(sum(i*i for i in light))
-    return tuple(i/l for i in light)
-
-def get_normal(p, mat, time):
-    scene = get_scene(time)
-
-    if mat == 1:  # sphere
-        center = scene["sphere"]["pos"]
-        n = (
-            p[0] - center[0],
-            p[1] - center[1],
-            p[2] - center[2]
-        )
-        l = math.sqrt(sum(i*i for i in n))
-        return tuple(i/l for i in n)
-
-    if mat == 2:  # box
-        center = scene["box"]["pos"]
-        size = scene["box"]["size"]
-
-        local = [p[i] - center[i] for i in range(3)]
-        abs_local = [abs(local[i]) for i in range(3)]
-
-        max_i = abs_local.index(max(abs_local))
-
-        normal = [0, 0, 0]
-        normal[max_i] = 1 if local[max_i] > 0 else -1
-        return tuple(normal)
-    
-    if mat == 0:
-        return (0, 1, 0)
+    l = math.sqrt(light[0] * light[0] + light[1] * light[1] + light[2] * light[2])
+    return (light[0] / l, light[1] / l, light[2] / l)
 
 
+@njit
+def get_normal(hit_x, hit_y, hit_z, mat_id, sphere_x, sphere_y, sphere_z, box_x, box_y, box_z, box_sx, box_sy, box_sz):
+    if mat_id == 1:
+        nx = hit_x - sphere_x
+        ny = hit_y - sphere_y
+        nz = hit_z - sphere_z
+    elif mat_id == 2:
+        min_x = box_x - box_sx
+        max_x = box_x + box_sx
+        min_y = box_y - box_sy
+        max_y = box_y + box_sy
+        min_z = box_z - box_sz
+        max_z = box_z + box_sz
+
+        dx_min = abs(hit_x - min_x)
+        dx_max = abs(max_x - hit_x)
+        dy_min = abs(hit_y - min_y)
+        dy_max = abs(max_y - hit_y)
+        dz_min = abs(hit_z - min_z)
+        dz_max = abs(max_z - hit_z)
+
+        best = dx_min
+        nx, ny, nz = -1.0, 0.0, 0.0
+
+        if dx_max < best:
+            best = dx_max
+            nx, ny, nz = 1.0, 0.0, 0.0
+        if dy_min < best:
+            best = dy_min
+            nx, ny, nz = 0.0, -1.0, 0.0
+        if dy_max < best:
+            best = dy_max
+            nx, ny, nz = 0.0, 1.0, 0.0
+        if dz_min < best:
+            best = dz_min
+            nx, ny, nz = 0.0, 0.0, -1.0
+        if dz_max < best:
+            nx, ny, nz = 0.0, 0.0, 1.0
+    else:
+        nx, ny, nz = 0.0, 1.0, 0.0
+
+    n_len = math.sqrt(nx * nx + ny * ny + nz * nz)
+    if n_len > 0.0:
+        inv = 1.0 / n_len
+        nx *= inv
+        ny *= inv
+        nz *= inv
+
+    return nx, ny, nz
+
+
+@njit
 def reflect(rd, n):
-    dot = sum(rd[i]*n[i] for i in range(3))
-    return tuple(rd[i] - 2*dot*n[i] for i in range(3))
-
-
-def shadow(p, light, time):
-    t, _ = trace(
-        (p[0] + light[0]*0.01,
-         p[1] + light[1]*0.01,
-         p[2] + light[2]*0.01),
-        light,
-        time
+    d = rd[0] * n[0] + rd[1] * n[1] + rd[2] * n[2]
+    return (
+        rd[0] - 2.0 * d * n[0],
+        rd[1] - 2.0 * d * n[1],
+        rd[2] - 2.0 * d * n[2],
     )
-    return 0 if t is not None else 1
 
 
-def shade(ro, rd, light, time):
-    color = 0
-    ro2 = ro
-    rd2 = rd
+@njit
+def shade(
+    ro,
+    rd,
+    light,
+    bounces,
+    sphere_x,
+    sphere_y,
+    sphere_z,
+    sphere_r,
+    box_x,
+    box_y,
+    box_z,
+    box_sx,
+    box_sy,
+    box_sz,
+    plane_h,
+):
+    t, mat_id = trace(
+        ro,
+        rd,
+        sphere_x,
+        sphere_y,
+        sphere_z,
+        sphere_r,
+        box_x,
+        box_y,
+        box_z,
+        box_sx,
+        box_sy,
+        box_sz,
+        plane_h,
+    )
 
-    def get_material(mat_id):
-        if mat_id == 0:
-            return {"diff": 0.9, "spec": 0.0, "rough": 1.0}
-        if mat_id == 1:
-            return {"diff": 0.7, "spec": 0.3, "rough": 0.4}
-        if mat_id == 2:
-            return {"diff": 0.6, "spec": 0.6, "rough": 0.2}
+    if t < 0.0:
+        return 0.0
 
-    for bounce in range(config.RENDER["bounces"]):
-        t, mat = trace(ro2, rd2, time)
+    hit_x = ro[0] + rd[0] * t
+    hit_y = ro[1] + rd[1] * t
+    hit_z = ro[2] + rd[2] * t
 
-        if t is None:
-            break
+    nx, ny, nz = get_normal(
+        hit_x,
+        hit_y,
+        hit_z,
+        mat_id,
+        sphere_x,
+        sphere_y,
+        sphere_z,
+        box_x,
+        box_y,
+        box_z,
+        box_sx,
+        box_sy,
+        box_sz,
+    )
 
-        p = tuple(ro2[i] + rd2[i]*t for i in range(3))
-        n = get_normal(p, mat, time)
+    lambert = nx * light[0] + ny * light[1] + nz * light[2]
+    if lambert < 0.0:
+        lambert = 0.0
 
-        mat_data = get_material(mat)
+    eps = 1e-3
+    shadow_ro = (
+        hit_x + nx * eps,
+        hit_y + ny * eps,
+        hit_z + nz * eps,
+    )
+    t_shadow, _ = trace(
+        shadow_ro,
+        light,
+        sphere_x,
+        sphere_y,
+        sphere_z,
+        sphere_r,
+        box_x,
+        box_y,
+        box_z,
+        box_sx,
+        box_sy,
+        box_sz,
+        plane_h,
+    )
+    shadow = 0.0 if t_shadow > 0.0 else 1.0
 
-        diff = max(sum(n[i]*light[i] for i in range(3)), 0)
-        diff *= shadow(p, light, time)
+    color = lambert * shadow
 
-        refl_light = reflect(tuple(-light[i] for i in range(3)), n)
-        spec = max(sum(refl_light[i]*(-rd2[i]) for i in range(3)), 0)
-        spec = spec ** (1.0 / mat_data["rough"])
+    if bounces > 0:
+        reflect_dir = reflect(rd, (nx, ny, nz))
+        reflect_ro = (
+            hit_x + nx * eps,
+            hit_y + ny * eps,
+            hit_z + nz * eps,
+        )
+        reflected = shade(
+            reflect_ro,
+            reflect_dir,
+            light,
+            bounces - 1,
+            sphere_x,
+            sphere_y,
+            sphere_z,
+            sphere_r,
+            box_x,
+            box_y,
+            box_z,
+            box_sx,
+            box_sy,
+            box_sz,
+            plane_h,
+        )
+        color = color * 0.8 + reflected * 0.2
 
-        color += (
-            diff * mat_data["diff"] +
-            spec * mat_data["spec"]
-        ) * (0.6 if bounce == 0 else 0.3)
-
-        rd2 = reflect(rd2, n)
-        ro2 = tuple(p[i] + n[i]*0.01 for i in range(3))
-
-    return max(0, min(color, 1))
+    if color < 0.0:
+        return 0.0
+    if color > 1.0:
+        return 1.0
+    return color
