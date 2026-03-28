@@ -42,7 +42,7 @@ def render_frame_buffer_numba(
 
             for _ in range(samples):
                 nx = ((x + np.random.rand()) / W) * 2.0 - 1.0
-                ny = ((y + np.random.rand()) / H) * 2.0 - 1.0
+                ny = 1.0 - ((y + np.random.rand()) / H) * 2.0
                 nx *= aspect
 
                 rd = np.empty(3, dtype=np.float32)
