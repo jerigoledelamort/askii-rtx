@@ -808,20 +808,41 @@ def postprocess_kernel(
     dither = (xoroshiro128p_uniform_float32(rng_states, thread_id) - 0.5) * (2.0 * DITHER_STRENGTH)
 
     lum = luminance_of(r, g, b)
-    lum = lum + dither
-    # higher contrast on edges
-    lum = lum * (1.0 - 0.4 * edge) + edge * 0.9
-    lum = saturate01(lum)
+    lum = saturate01(lum + dither)
+    # preserve shading while nudging structure with edge intensity
+    lum = saturate01(lum + edge * 0.2)
+
+    # decouple symbol mapping from color energy response
+    symbol_lum = lum ** 0.85
+    color_lum = lum ** 1.2
 
     r = saturate01(r)
     g = saturate01(g)
     b = saturate01(b)
 
-    max_c = max(r, g, b, 1e-6)
-    buffer_rgb[y, x, 0] = r / max_c
-    buffer_rgb[y, x, 1] = g / max_c
-    buffer_rgb[y, x, 2] = b / max_c
-    luminance_buffer[y, x] = lum
+    # normalize base color (chroma) independently from energy
+    base_max = max(r, g, b, 1e-6)
+    base_r = r / base_max
+    base_g = g / base_max
+    base_b = b / base_max
+
+    # luminance-driven energy scaling for perceived depth/contrast
+    energy = 0.2 + 0.8 * color_lum
+    rgb_r = base_r * energy
+    rgb_g = base_g * energy
+    rgb_b = base_b * energy
+
+    # optional compression to avoid oversaturation after scaling
+    max_c = max(rgb_r, rgb_g, rgb_b)
+    if max_c > 1.0:
+        rgb_r /= max_c
+        rgb_g /= max_c
+        rgb_b /= max_c
+
+    buffer_rgb[y, x, 0] = saturate01(rgb_r)
+    buffer_rgb[y, x, 1] = saturate01(rgb_g)
+    buffer_rgb[y, x, 2] = saturate01(rgb_b)
+    luminance_buffer[y, x] = symbol_lum
     edge_buffer[y, x] = edge
 
 
