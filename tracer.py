@@ -213,9 +213,9 @@ def trace_ray(
         rd[0], rd[1], rd[2], nx, ny, nz, lx, ly, lz, mat_id, lambert, shadow, ambient_on
     )
 
-    base_r = MATERIALS[mat_id, 6]
-    base_g = MATERIALS[mat_id, 7]
-    base_b = MATERIALS[mat_id, 8]
+    base_r = MATERIALS[mat_id, 8]
+    base_g = MATERIALS[mat_id, 9]
+    base_b = MATERIALS[mat_id, 10]
 
     r = base_r * lighting
     g = base_g * lighting

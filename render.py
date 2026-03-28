@@ -154,6 +154,38 @@ def schlick(f0, cos_theta):
 
 
 @cuda.jit(device=True)
+def random_unit_vector(rng_states, thread_id):
+    x = xoroshiro128p_uniform_float32(rng_states, thread_id) * 2.0 - 1.0
+    y = xoroshiro128p_uniform_float32(rng_states, thread_id) * 2.0 - 1.0
+    z = xoroshiro128p_uniform_float32(rng_states, thread_id) * 2.0 - 1.0
+
+    ll = x * x + y * y + z * z
+    if ll < EPS:
+        return 0.0, 1.0, 0.0
+    inv = 1.0 / math.sqrt(ll)
+    return x * inv, y * inv, z * inv
+
+
+@cuda.jit(device=True)
+def perturb_direction(dir_x, dir_y, dir_z, roughness, rng_states, thread_id):
+    if roughness <= 0.0:
+        return dir_x, dir_y, dir_z
+
+    jx, jy, jz = random_unit_vector(rng_states, thread_id)
+    out_x = dir_x + jx * roughness
+    out_y = dir_y + jy * roughness
+    out_z = dir_z + jz * roughness
+
+    ll = out_x * out_x + out_y * out_y + out_z * out_z
+    if ll > EPS:
+        inv = 1.0 / math.sqrt(ll)
+        out_x *= inv
+        out_y *= inv
+        out_z *= inv
+    return out_x, out_y, out_z
+
+
+@cuda.jit(device=True)
 def hit_sphere(ro_x, ro_y, ro_z, rd_x, rd_y, rd_z, cx, cy, cz, radius):
     ocx = ro_x - cx
     ocy = ro_y - cy
@@ -360,9 +392,11 @@ def compute_shadow(hit_x, hit_y, hit_z, nx, ny, nz, lx, ly, lz, soft_shadow_on, 
 
 @cuda.jit(device=True)
 def random_hemisphere(nx, ny, nz, rng_states, thread_id):
-    rx = nx + (xoroshiro128p_uniform_float32(rng_states, thread_id) - 0.5)
-    ry = ny + (xoroshiro128p_uniform_float32(rng_states, thread_id) - 0.5)
-    rz = nz + (xoroshiro128p_uniform_float32(rng_states, thread_id) - 0.5)
+    # Cosine-weighted-ish hemisphere sample around normal.
+    ux, uy, uz = random_unit_vector(rng_states, thread_id)
+    rx = nx + ux
+    ry = ny + uy
+    rz = nz + uz
 
     dl = math.sqrt(rx * rx + ry * ry + rz * rz)
     if dl > EPS:
@@ -371,8 +405,7 @@ def random_hemisphere(nx, ny, nz, rng_states, thread_id):
         ry *= inv
         rz *= inv
 
-    n_dot_d = rx * nx + ry * ny + rz * nz
-    if n_dot_d < 0.0:
+    if rx * nx + ry * ny + rz * nz < 0.0:
         rx = -rx
         ry = -ry
         rz = -rz
@@ -389,6 +422,16 @@ def aces_tonemap(x):
     e = 0.14
     y = (x * (a * x + b)) / (x * (c * x + d) + e)
     return saturate01(y)
+
+
+@cuda.jit(device=True)
+def schlick_fresnel(cos_theta, ior):
+    if cos_theta < 0.0:
+        cos_theta = -cos_theta
+
+    r0 = (1.0 - ior) / (1.0 + ior)
+    r0 = r0 * r0
+    return r0 + (1.0 - r0) * (1.0 - cos_theta) ** 5
 
 
 @cuda.jit
@@ -477,6 +520,8 @@ def render_sample_kernel(
         throughput_r = 1.0
         throughput_g = 1.0
         throughput_b = 1.0
+        medium_absorption = 0.0
+        inside_medium = 0
         accum_r = 0.0
         accum_g = 0.0
         accum_b = 0.0
@@ -501,6 +546,12 @@ def render_sample_kernel(
             hit_z = ro_z + rd_z * t
             nx, ny, nz = get_normal(hit_x, hit_y, hit_z, hit_type, hit_index, spheres, boxes)
 
+            if inside_medium == 1 and medium_absorption > 0.0:
+                beer = math.exp(-medium_absorption * t)
+                throughput_r *= beer
+                throughput_g *= beer
+                throughput_b *= beer
+
             if bounce == 0:
                 first_depth = t
                 first_nx = nx
@@ -514,12 +565,14 @@ def render_sample_kernel(
             shadow = compute_shadow(hit_x, hit_y, hit_z, nx, ny, nz, lx, ly, lz, soft_shadow_on, hard_shadow_on, spheres, boxes, plane_h, rng_states, thread_id)
             lighting = local_lighting(rd_x, rd_y, rd_z, nx, ny, nz, lx, ly, lz, mat_id, lambert, shadow, materials, ambient_on)
 
-            base_r = materials[mat_id, 6]
-            base_g = materials[mat_id, 7]
-            base_b = materials[mat_id, 8]
+            base_r = materials[mat_id, 8]
+            base_g = materials[mat_id, 9]
+            base_b = materials[mat_id, 10]
             reflectivity = materials[mat_id, 3]
             roughness = materials[mat_id, 4]
             refractivity = materials[mat_id, 5]
+            ior = materials[mat_id, 6]
+            absorption = materials[mat_id, 7]
 
             local_r = base_r * lighting
             local_g = base_g * lighting
@@ -535,7 +588,21 @@ def render_sample_kernel(
             next_rd_x = rd_x
             next_rd_y = rd_y
             next_rd_z = rd_z
-            continue_path = 0
+            if reflection_on == 0:
+                reflectivity = 0.0
+            if refraction_on == 0:
+                refractivity = 0.0
+
+            # Energy-conserving component normalization.
+            total_spec = reflectivity + refractivity
+            if total_spec > 1.0:
+                inv_total = 1.0 / total_spec
+                reflectivity *= inv_total
+                refractivity *= inv_total
+
+            diffuse_weight = 1.0 - reflectivity - refractivity
+            if diffuse_weight < 0.0:
+                diffuse_weight = 0.0
 
             cos_theta = -(rd_x * nx + rd_y * ny + rd_z * nz)
             if cos_theta < 0.0:
@@ -543,80 +610,73 @@ def render_sample_kernel(
             if cos_theta > 1.0:
                 cos_theta = 1.0
 
-            fresnel = reflectivity
+            fresnel = 1.0
             if fresnel_on == 1:
-                fresnel = schlick(reflectivity, cos_theta)
+                f0 = (1.0 - ior) / (1.0 + ior)
+                f0 = f0 * f0
+                fresnel = schlick(f0, cos_theta)
 
-            diffuse_weight = 1.0 - fresnel
-            if diffuse_weight < 0.0:
-                diffuse_weight = 0.0
+            reflection_weight = reflectivity * fresnel
+            refraction_weight = refractivity * (1.0 - fresnel)
+            diffuse_weight *= (1.0 - fresnel)
 
-            if refraction_on == 1 and refractivity > 0.0:
-                ior = 1.0 + refractivity * 0.5
-                f0r = (1.0 - ior) / (1.0 + ior)
-                f0r = f0r * f0r
-                fresnel_refract = schlick(f0r, cos_theta)
+            weight_sum = reflection_weight + refraction_weight + diffuse_weight
+            if weight_sum <= 1e-6:
+                break
 
+            inv_weight_sum = 1.0 / weight_sum
+            reflection_weight *= inv_weight_sum
+            refraction_weight *= inv_weight_sum
+            diffuse_weight *= inv_weight_sum
+
+            cos_theta = -(rd_x * nx + rd_y * ny + rd_z * nz)
+            if cos_theta < 0.0:
+                cos_theta = -cos_theta
+
+            fresnel = schlick_fresnel(cos_theta, ior)
+
+            rnd = xoroshiro128p_uniform_float32(rng_states, thread_id)
+            if rnd < reflection_weight:
+                rx, ry, rz = reflect_components(rd_x, rd_y, rd_z, nx, ny, nz)
+                next_rd_x, next_rd_y, next_rd_z = perturb_direction(rx, ry, rz, roughness, rng_states, thread_id)
+                throughput_r *= base_r * reflection_weight * REFLECT_ATTEN
+                throughput_g *= base_g * reflection_weight * REFLECT_ATTEN
+                throughput_b *= base_b * reflection_weight * REFLECT_ATTEN
+            elif rnd < (reflection_weight + refraction_weight):
                 tx, ty, tz, ok = refract_components(rd_x, rd_y, rd_z, nx, ny, nz, ior)
                 use_reflect = 0
                 if ok == 0:
                     use_reflect = 1
                 else:
-                    if xoroshiro128p_uniform_float32(rng_states, thread_id) < fresnel_refract:
+                    if xoroshiro128p_uniform_float32(rng_states, thread_id) < fresnel:
                         use_reflect = 1
 
-                if use_reflect == 1 and reflection_on == 1:
+                if ok == 0:
+                    # TIR fallback -> reflection branch.
                     rx, ry, rz = reflect_components(rd_x, rd_y, rd_z, nx, ny, nz)
-                    jx, jy, jz = random_hemisphere(nx, ny, nz, rng_states, thread_id)
-                    next_rd_x = rx + jx * roughness
-                    next_rd_y = ry + jy * roughness
-                    next_rd_z = rz + jz * roughness
-                    nl = math.sqrt(next_rd_x * next_rd_x + next_rd_y * next_rd_y + next_rd_z * next_rd_z)
-                    if nl > EPS:
-                        inv_nl = 1.0 / nl
-                        next_rd_x *= inv_nl
-                        next_rd_y *= inv_nl
-                        next_rd_z *= inv_nl
-                    throughput_r *= base_r * REFLECT_ATTEN * fresnel_refract
-                    throughput_g *= base_g * REFLECT_ATTEN * fresnel_refract
-                    throughput_b *= base_b * REFLECT_ATTEN * fresnel_refract
+                    next_rd_x, next_rd_y, next_rd_z = perturb_direction(rx, ry, rz, roughness, rng_states, thread_id)
+                    throughput_r *= base_r * reflection_weight * REFLECT_ATTEN
+                    throughput_g *= base_g * reflection_weight * REFLECT_ATTEN
+                    throughput_b *= base_b * reflection_weight * REFLECT_ATTEN
                 else:
-                    next_rd_x = tx
-                    next_rd_y = ty
-                    next_rd_z = tz
-                    trans = 1.0 - fresnel_refract
-                    throughput_r *= base_r * trans
-                    throughput_g *= base_g * trans
-                    throughput_b *= base_b * trans
-                continue_path = 1
-
-            if continue_path == 0 and reflection_on == 1 and reflectivity > 0.0:
-                if xoroshiro128p_uniform_float32(rng_states, thread_id) < fresnel:
-                    rx, ry, rz = reflect_components(rd_x, rd_y, rd_z, nx, ny, nz)
-                    jx, jy, jz = random_hemisphere(nx, ny, nz, rng_states, thread_id)
-                    next_rd_x = rx + jx * roughness
-                    next_rd_y = ry + jy * roughness
-                    next_rd_z = rz + jz * roughness
-                    nl = math.sqrt(next_rd_x * next_rd_x + next_rd_y * next_rd_y + next_rd_z * next_rd_z)
-                    if nl > EPS:
-                        inv_nl = 1.0 / nl
-                        next_rd_x *= inv_nl
-                        next_rd_y *= inv_nl
-                        next_rd_z *= inv_nl
-                    throughput_r *= base_r * REFLECT_ATTEN * fresnel
-                    throughput_g *= base_g * REFLECT_ATTEN * fresnel
-                    throughput_b *= base_b * REFLECT_ATTEN * fresnel
-                else:
-                    dx, dy, dz = random_hemisphere(nx, ny, nz, rng_states, thread_id)
-                    next_rd_x = dx
-                    next_rd_y = dy
-                    next_rd_z = dz
-                    throughput_r *= base_r * diffuse_gi_strength * diffuse_weight
-                    throughput_g *= base_g * diffuse_gi_strength * diffuse_weight
-                    throughput_b *= base_b * diffuse_gi_strength * diffuse_weight
-                continue_path = 1
-
-            if continue_path == 0:
+                    next_rd_x, next_rd_y, next_rd_z = perturb_direction(tx, ty, tz, roughness, rng_states, thread_id)
+                    ndot = rd_x * nx + rd_y * ny + rd_z * nz
+                    if ndot < 0.0:
+                        next_ro_x = hit_x - nx * HIT_BIAS
+                        next_ro_y = hit_y - ny * HIT_BIAS
+                        next_ro_z = hit_z - nz * HIT_BIAS
+                        inside_medium = 1
+                        medium_absorption = absorption
+                    else:
+                        next_ro_x = hit_x + nx * HIT_BIAS
+                        next_ro_y = hit_y + ny * HIT_BIAS
+                        next_ro_z = hit_z + nz * HIT_BIAS
+                        inside_medium = 0
+                        medium_absorption = 0.0
+                    throughput_r *= base_r * refraction_weight
+                    throughput_g *= base_g * refraction_weight
+                    throughput_b *= base_b * refraction_weight
+            else:
                 dx, dy, dz = random_hemisphere(nx, ny, nz, rng_states, thread_id)
                 next_rd_x = dx
                 next_rd_y = dy
@@ -624,7 +684,6 @@ def render_sample_kernel(
                 throughput_r *= base_r * diffuse_gi_strength * diffuse_weight
                 throughput_g *= base_g * diffuse_gi_strength * diffuse_weight
                 throughput_b *= base_b * diffuse_gi_strength * diffuse_weight
-                continue_path = 1
 
             ro_x = next_ro_x
             ro_y = next_ro_y
