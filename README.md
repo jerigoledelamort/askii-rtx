@@ -488,11 +488,3 @@ UI размещается справа (`UI_WIDTH = 320`) и содержит:
 3. Запустить `python main.py`.
 4. Настроить realtime через UI.
 5. Нажать `BAKE` для офлайн рендера и MP4.
-
----
-
-Если хотите, можно следующим шагом добавить:
-- `requirements.txt`/`pyproject.toml`;
-- автодетект "нет CUDA" + fallback в `tracer.py`;
-- полноценную загрузку сцены из `config.SCENE`;
-- headless CLI для batch-рендера без UI.
