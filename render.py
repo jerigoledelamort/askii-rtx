@@ -14,10 +14,90 @@ from materials import MATERIALS
 HIT_BIAS = np.float32(1e-3)
 EPS = np.float32(1e-6)
 DIRECT_WEIGHT = np.float32(0.8)
-REFLECT_ATTEN = np.float32(0.6)
+REFLECT_ATTEN = np.float32(0.7)
+FOG_DENSITY = np.float32(0.12)
+DITHER_STRENGTH = np.float32(0.01)
+ADAPTIVE_VARIANCE_THRESHOLD = np.float32(0.03)
+ADAPTIVE_MIN_SAMPLES = 1
 
 _rng_states = None
 _rng_size = 0
+
+_d_spheres = None
+_d_boxes = None
+_d_materials = None
+_prev_spheres = None
+_prev_boxes = None
+_prev_plane = None
+
+_d_accum_rgb = None
+_d_sample_count = None
+_accum_shape = None
+_prev_camera_state = None
+
+
+def _camera_state(ro, forward, right, up):
+    return np.concatenate((ro, forward, right, up)).astype(np.float32)
+
+
+def _scene_changed(spheres, boxes, plane_y):
+    global _prev_spheres, _prev_boxes, _prev_plane
+
+    changed = (
+        _prev_spheres is None
+        or _prev_boxes is None
+        or _prev_plane is None
+        or _prev_spheres.shape != spheres.shape
+        or _prev_boxes.shape != boxes.shape
+        or not np.array_equal(_prev_spheres, spheres)
+        or not np.array_equal(_prev_boxes, boxes)
+        or float(_prev_plane) != float(plane_y)
+    )
+
+    if changed:
+        _prev_spheres = spheres.copy()
+        _prev_boxes = boxes.copy()
+        _prev_plane = float(plane_y)
+
+    return changed
+
+
+def _ensure_device_scene(spheres, boxes):
+    global _d_spheres, _d_boxes, _d_materials
+
+    if _d_spheres is None or _d_spheres.shape != spheres.shape:
+        _d_spheres = cuda.to_device(spheres.astype(np.float32))
+    else:
+        _d_spheres.copy_to_device(spheres.astype(np.float32))
+
+    if _d_boxes is None or _d_boxes.shape != boxes.shape:
+        _d_boxes = cuda.to_device(boxes.astype(np.float32))
+    else:
+        _d_boxes.copy_to_device(boxes.astype(np.float32))
+
+    if _d_materials is None:
+        _d_materials = cuda.to_device(MATERIALS.astype(np.float32))
+
+
+def _reset_accumulation(W, H):
+    global _d_accum_rgb, _d_sample_count, _accum_shape
+    _d_accum_rgb = cuda.to_device(np.zeros((H, W, 3), dtype=np.float32))
+    _d_sample_count = cuda.to_device(np.zeros((H, W), dtype=np.float32))
+    _accum_shape = (H, W)
+
+
+@cuda.jit(device=True)
+def saturate01(x):
+    if x < 0.0:
+        return 0.0
+    if x > 1.0:
+        return 1.0
+    return x
+
+
+@cuda.jit(device=True)
+def luminance_of(r, g, b):
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
 
 
 @cuda.jit(device=True)
@@ -65,6 +145,12 @@ def refract_components(dx, dy, dz, nx, ny, nz, ior):
         ry *= inv
         rz *= inv
     return rx, ry, rz, 1
+
+
+@cuda.jit(device=True)
+def schlick(f0, cos_theta):
+    c = 1.0 - cos_theta
+    return f0 + (1.0 - f0) * c * c * c * c * c
 
 
 @cuda.jit(device=True)
@@ -294,10 +380,23 @@ def random_hemisphere(nx, ny, nz, rng_states, thread_id):
     return rx, ry, rz
 
 
+@cuda.jit(device=True)
+def aces_tonemap(x):
+    a = 2.51
+    b = 0.03
+    c = 2.43
+    d = 0.59
+    e = 0.14
+    y = (x * (a * x + b)) / (x * (c * x + d) + e)
+    return saturate01(y)
+
+
 @cuda.jit
-def render_kernel(
-    buffer_idx,
-    buffer_rgb,
+def render_sample_kernel(
+    sample_rgb,
+    sample_depth,
+    sample_normal,
+    sample_used,
     W,
     H,
     aspect,
@@ -309,7 +408,7 @@ def render_kernel(
     hard_shadow_on,
     reflection_on,
     refraction_on,
-    chars_len,
+    fresnel_on,
     lx,
     ly,
     lz,
@@ -321,10 +420,10 @@ def render_kernel(
     boxes,
     plane_h,
     diffuse_gi_strength,
-    exposure,
-    gamma,
     materials,
     rng_states,
+    accum_rgb,
+    sample_count,
 ):
     x, y = cuda.grid(2)
     if x >= W or y >= H:
@@ -332,11 +431,31 @@ def render_kernel(
 
     thread_id = y * W + x
 
+    prev_count = sample_count[y, x]
+    prev_lum = 0.0
+    if prev_count > 0.0:
+        prev_r = accum_rgb[y, x, 0] / prev_count
+        prev_g = accum_rgb[y, x, 1] / prev_count
+        prev_b = accum_rgb[y, x, 2] / prev_count
+        prev_lum = luminance_of(prev_r, prev_g, prev_b)
+
+    target_samples = samples
+    if prev_count > 0.0 and samples > ADAPTIVE_MIN_SAMPLES:
+        target_samples = samples
+
     out_r = 0.0
     out_g = 0.0
     out_b = 0.0
+    depth_sum = 0.0
+    nsum_x = 0.0
+    nsum_y = 0.0
+    nsum_z = 0.0
+    used = 0
 
-    for _ in range(samples):
+    for _sample in range(samples):
+        if _sample >= target_samples:
+            break
+
         nxs = ((x + xoroshiro128p_uniform_float32(rng_states, thread_id)) / W) * 2.0 - 1.0
         nys = 1.0 - ((y + xoroshiro128p_uniform_float32(rng_states, thread_id)) / H) * 2.0
         nxs *= aspect
@@ -361,9 +480,12 @@ def render_kernel(
         accum_r = 0.0
         accum_g = 0.0
         accum_b = 0.0
-        diffuse_done = 0
+        first_depth = -1.0
+        first_nx = 0.0
+        first_ny = 1.0
+        first_nz = 0.0
 
-        for _bounce in range(bounces):
+        for bounce in range(bounces):
             t, mat_id, hit_type, hit_index = trace_scene(ro_x, ro_y, ro_z, rd_x, rd_y, rd_z, spheres, boxes, plane_h)
 
             if t < 0.0:
@@ -379,6 +501,12 @@ def render_kernel(
             hit_z = ro_z + rd_z * t
             nx, ny, nz = get_normal(hit_x, hit_y, hit_z, hit_type, hit_index, spheres, boxes)
 
+            if bounce == 0:
+                first_depth = t
+                first_nx = nx
+                first_ny = ny
+                first_nz = nz
+
             lambert = nx * lx + ny * ly + nz * lz
             if lambert < 0.0:
                 lambert = 0.0
@@ -390,6 +518,7 @@ def render_kernel(
             base_g = materials[mat_id, 7]
             base_b = materials[mat_id, 8]
             reflectivity = materials[mat_id, 3]
+            roughness = materials[mat_id, 4]
             refractivity = materials[mat_id, 5]
 
             local_r = base_r * lighting
@@ -406,68 +535,96 @@ def render_kernel(
             next_rd_x = rd_x
             next_rd_y = rd_y
             next_rd_z = rd_z
-
             continue_path = 0
 
+            cos_theta = -(rd_x * nx + rd_y * ny + rd_z * nz)
+            if cos_theta < 0.0:
+                cos_theta = 0.0
+            if cos_theta > 1.0:
+                cos_theta = 1.0
+
+            fresnel = reflectivity
+            if fresnel_on == 1:
+                fresnel = schlick(reflectivity, cos_theta)
+
+            diffuse_weight = 1.0 - fresnel
+            if diffuse_weight < 0.0:
+                diffuse_weight = 0.0
+
             if refraction_on == 1 and refractivity > 0.0:
-                ior = 1.0 + refractivity * 0.7
+                ior = 1.0 + refractivity * 0.5
+                f0r = (1.0 - ior) / (1.0 + ior)
+                f0r = f0r * f0r
+                fresnel_refract = schlick(f0r, cos_theta)
+
                 tx, ty, tz, ok = refract_components(rd_x, rd_y, rd_z, nx, ny, nz, ior)
-                if ok == 1:
+                use_reflect = 0
+                if ok == 0:
+                    use_reflect = 1
+                else:
+                    if xoroshiro128p_uniform_float32(rng_states, thread_id) < fresnel_refract:
+                        use_reflect = 1
+
+                if use_reflect == 1 and reflection_on == 1:
+                    rx, ry, rz = reflect_components(rd_x, rd_y, rd_z, nx, ny, nz)
+                    jx, jy, jz = random_hemisphere(nx, ny, nz, rng_states, thread_id)
+                    next_rd_x = rx + jx * roughness
+                    next_rd_y = ry + jy * roughness
+                    next_rd_z = rz + jz * roughness
+                    nl = math.sqrt(next_rd_x * next_rd_x + next_rd_y * next_rd_y + next_rd_z * next_rd_z)
+                    if nl > EPS:
+                        inv_nl = 1.0 / nl
+                        next_rd_x *= inv_nl
+                        next_rd_y *= inv_nl
+                        next_rd_z *= inv_nl
+                    throughput_r *= base_r * REFLECT_ATTEN * fresnel_refract
+                    throughput_g *= base_g * REFLECT_ATTEN * fresnel_refract
+                    throughput_b *= base_b * REFLECT_ATTEN * fresnel_refract
+                else:
                     next_rd_x = tx
                     next_rd_y = ty
                     next_rd_z = tz
-                    throughput_r *= base_r * (0.55 + 0.45 * refractivity)
-                    throughput_g *= base_g * (0.55 + 0.45 * refractivity)
-                    throughput_b *= base_b * (0.55 + 0.45 * refractivity)
-                    continue_path = 1
-                elif reflection_on == 1 and reflectivity > 0.0:
-                    rx, ry, rz = reflect_components(rd_x, rd_y, rd_z, nx, ny, nz)
-                    next_rd_x = rx
-                    next_rd_y = ry
-                    next_rd_z = rz
-                    throughput_r *= base_r * REFLECT_ATTEN * reflectivity
-                    throughput_g *= base_g * REFLECT_ATTEN * reflectivity
-                    throughput_b *= base_b * REFLECT_ATTEN * reflectivity
-                    continue_path = 1
+                    trans = 1.0 - fresnel_refract
+                    throughput_r *= base_r * trans
+                    throughput_g *= base_g * trans
+                    throughput_b *= base_b * trans
+                continue_path = 1
 
             if continue_path == 0 and reflection_on == 1 and reflectivity > 0.0:
-                rand = xoroshiro128p_uniform_float32(rng_states, thread_id)
-                if rand < reflectivity:
+                if xoroshiro128p_uniform_float32(rng_states, thread_id) < fresnel:
                     rx, ry, rz = reflect_components(rd_x, rd_y, rd_z, nx, ny, nz)
-                    next_rd_x = rx
-                    next_rd_y = ry
-                    next_rd_z = rz
-                    throughput_r *= base_r * REFLECT_ATTEN * reflectivity
-                    throughput_g *= base_g * REFLECT_ATTEN * reflectivity
-                    throughput_b *= base_b * REFLECT_ATTEN * reflectivity
+                    jx, jy, jz = random_hemisphere(nx, ny, nz, rng_states, thread_id)
+                    next_rd_x = rx + jx * roughness
+                    next_rd_y = ry + jy * roughness
+                    next_rd_z = rz + jz * roughness
+                    nl = math.sqrt(next_rd_x * next_rd_x + next_rd_y * next_rd_y + next_rd_z * next_rd_z)
+                    if nl > EPS:
+                        inv_nl = 1.0 / nl
+                        next_rd_x *= inv_nl
+                        next_rd_y *= inv_nl
+                        next_rd_z *= inv_nl
+                    throughput_r *= base_r * REFLECT_ATTEN * fresnel
+                    throughput_g *= base_g * REFLECT_ATTEN * fresnel
+                    throughput_b *= base_b * REFLECT_ATTEN * fresnel
                 else:
                     dx, dy, dz = random_hemisphere(nx, ny, nz, rng_states, thread_id)
                     next_rd_x = dx
                     next_rd_y = dy
                     next_rd_z = dz
-                    throughput_r *= base_r * diffuse_gi_strength
-                    throughput_g *= base_g * diffuse_gi_strength
-                    throughput_b *= base_b * diffuse_gi_strength
-                    diffuse_done = 1
+                    throughput_r *= base_r * diffuse_gi_strength * diffuse_weight
+                    throughput_g *= base_g * diffuse_gi_strength * diffuse_weight
+                    throughput_b *= base_b * diffuse_gi_strength * diffuse_weight
                 continue_path = 1
 
-            if continue_path == 0 and diffuse_done == 0:
+            if continue_path == 0:
                 dx, dy, dz = random_hemisphere(nx, ny, nz, rng_states, thread_id)
                 next_rd_x = dx
                 next_rd_y = dy
                 next_rd_z = dz
-                inv_prob = 1.0 - reflectivity
-                if inv_prob < 1e-6:
-                    inv_prob = 1e-6
-
-                throughput_r *= base_r * diffuse_gi_strength / inv_prob
-                throughput_g *= base_g * diffuse_gi_strength / inv_prob
-                throughput_b *= base_b * diffuse_gi_strength / inv_prob
-                diffuse_done = 1
+                throughput_r *= base_r * diffuse_gi_strength * diffuse_weight
+                throughput_g *= base_g * diffuse_gi_strength * diffuse_weight
+                throughput_b *= base_b * diffuse_gi_strength * diffuse_weight
                 continue_path = 1
-
-            if continue_path == 0:
-                break
 
             ro_x = next_ro_x
             ro_y = next_ro_y
@@ -476,10 +633,11 @@ def render_kernel(
             rd_y = next_rd_y
             rd_z = next_rd_z
 
-            if _bounce > 2:
-                rr = max(throughput_r, throughput_g, throughput_b)
-                if rr < 1e-6:
+            if bounce >= 2:
+                rr = luminance_of(throughput_r, throughput_g, throughput_b)
+                if rr < 1e-5:
                     break
+                rr = rr if rr < 0.95 else 0.95
                 if xoroshiro128p_uniform_float32(rng_states, thread_id) > rr:
                     break
                 inv_rr = 1.0 / rr
@@ -490,50 +648,186 @@ def render_kernel(
         out_r += accum_r
         out_g += accum_g
         out_b += accum_b
+        depth_sum += first_depth if first_depth > 0.0 else 0.0
+        nsum_x += first_nx
+        nsum_y += first_ny
+        nsum_z += first_nz
+        used += 1
 
-    inv_samples = 1.0 / samples
-    r = out_r * inv_samples * exposure
-    g = out_g * inv_samples * exposure
-    b = out_b * inv_samples * exposure
+        if prev_count > 0.0 and used == 1 and samples > ADAPTIVE_MIN_SAMPLES:
+            sample_lum = luminance_of(accum_r, accum_g, accum_b)
+            variance = abs(sample_lum - prev_lum)
+            if variance < ADAPTIVE_VARIANCE_THRESHOLD:
+                target_samples = ADAPTIVE_MIN_SAMPLES
+
+    if used == 0:
+        sample_rgb[y, x, 0] = 0.0
+        sample_rgb[y, x, 1] = 0.0
+        sample_rgb[y, x, 2] = 0.0
+        sample_depth[y, x] = 0.0
+        sample_normal[y, x, 0] = 0.0
+        sample_normal[y, x, 1] = 1.0
+        sample_normal[y, x, 2] = 0.0
+        sample_used[y, x] = 0.0
+        return
+
+    inv_used = 1.0 / used
+    sample_rgb[y, x, 0] = out_r * inv_used
+    sample_rgb[y, x, 1] = out_g * inv_used
+    sample_rgb[y, x, 2] = out_b * inv_used
+    sample_depth[y, x] = depth_sum * inv_used
+
+    nn = math.sqrt(nsum_x * nsum_x + nsum_y * nsum_y + nsum_z * nsum_z)
+    if nn > EPS:
+        inv_nn = 1.0 / nn
+        sample_normal[y, x, 0] = nsum_x * inv_nn
+        sample_normal[y, x, 1] = nsum_y * inv_nn
+        sample_normal[y, x, 2] = nsum_z * inv_nn
+    else:
+        sample_normal[y, x, 0] = 0.0
+        sample_normal[y, x, 1] = 1.0
+        sample_normal[y, x, 2] = 0.0
+
+    sample_used[y, x] = float(used)
+
+
+@cuda.jit
+def accumulate_kernel(accum_rgb, sample_count, sample_rgb, sample_used):
+    x, y = cuda.grid(2)
+    if x >= accum_rgb.shape[1] or y >= accum_rgb.shape[0]:
+        return
+
+    w = sample_used[y, x]
+    if w <= 0.0:
+        return
+
+    accum_rgb[y, x, 0] += sample_rgb[y, x, 0] * w
+    accum_rgb[y, x, 1] += sample_rgb[y, x, 1] * w
+    accum_rgb[y, x, 2] += sample_rgb[y, x, 2] * w
+    sample_count[y, x] += w
+
+
+@cuda.jit
+def postprocess_kernel(
+    buffer_rgb,
+    luminance_buffer,
+    edge_buffer,
+    accum_rgb,
+    sample_count,
+    depth_buffer,
+    normal_buffer,
+    W,
+    H,
+    exposure,
+    gamma,
+    fog_density,
+    rng_states,
+):
+    x, y = cuda.grid(2)
+    if x >= W or y >= H:
+        return
+
+    count = sample_count[y, x]
+    if count <= 0.0:
+        buffer_rgb[y, x, 0] = 0.0
+        buffer_rgb[y, x, 1] = 0.0
+        buffer_rgb[y, x, 2] = 0.0
+        luminance_buffer[y, x] = 0.0
+        edge_buffer[y, x] = 0.0
+        return
+
+    r = accum_rgb[y, x, 0] / count
+    g = accum_rgb[y, x, 1] / count
+    b = accum_rgb[y, x, 2] / count
+
+    r *= exposure
+    g *= exposure
+    b *= exposure
+
+    # Filmic (ACES) tonemapping
+    r = aces_tonemap(r)
+    g = aces_tonemap(g)
+    b = aces_tonemap(b)
 
     if gamma != 1.0:
         r = r ** gamma
         g = g ** gamma
         b = b ** gamma
 
-    luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b
-    if luminance < 0.0:
-        luminance = 0.0
-    elif luminance > 1.0:
-        luminance = 1.0
+    # Slight saturation boost (stylization)
+    lum = luminance_of(r, g, b)
+    sat = 1.08
+    r = lum + (r - lum) * sat
+    g = lum + (g - lum) * sat
+    b = lum + (b - lum) * sat
+
+    depth = depth_buffer[y, x]
+    if depth > 0.0:
+        fog = 1.0 / (1.0 + depth * fog_density)
+        r *= fog
+        g *= fog
+        b *= fog
+
+    # Edge detection from depth + normal discontinuity
+    edge = 0.0
+    if x + 1 < W:
+        d2 = depth_buffer[y, x + 1]
+        if d2 > 0.0 and depth > 0.0:
+            dd = abs(depth - d2) * 0.6
+            if dd > edge:
+                edge = dd
+        nx0 = normal_buffer[y, x, 0]
+        ny0 = normal_buffer[y, x, 1]
+        nz0 = normal_buffer[y, x, 2]
+        nx1 = normal_buffer[y, x + 1, 0]
+        ny1 = normal_buffer[y, x + 1, 1]
+        nz1 = normal_buffer[y, x + 1, 2]
+        nd = 1.0 - (nx0 * nx1 + ny0 * ny1 + nz0 * nz1)
+        if nd > edge:
+            edge = nd
+
+    if y + 1 < H:
+        d2 = depth_buffer[y + 1, x]
+        if d2 > 0.0 and depth > 0.0:
+            dd = abs(depth - d2) * 0.6
+            if dd > edge:
+                edge = dd
+        nx0 = normal_buffer[y, x, 0]
+        ny0 = normal_buffer[y, x, 1]
+        nz0 = normal_buffer[y, x, 2]
+        nx1 = normal_buffer[y + 1, x, 0]
+        ny1 = normal_buffer[y + 1, x, 1]
+        nz1 = normal_buffer[y + 1, x, 2]
+        nd = 1.0 - (nx0 * nx1 + ny0 * ny1 + nz0 * nz1)
+        if nd > edge:
+            edge = nd
+
+    edge = saturate01(edge)
+    # Dithering to reduce banding
+    thread_id = y * W + x
+    dither = (xoroshiro128p_uniform_float32(rng_states, thread_id) - 0.5) * (2.0 * DITHER_STRENGTH)
+
+    lum = luminance_of(r, g, b)
+    lum = lum + dither
+    # higher contrast on edges
+    lum = lum * (1.0 - 0.4 * edge) + edge * 0.9
+    lum = saturate01(lum)
+
+    r = saturate01(r)
+    g = saturate01(g)
+    b = saturate01(b)
 
     max_c = max(r, g, b, 1e-6)
-    nr = r / max_c
-    ng = g / max_c
-    nb = b / max_c
-
-    if nr < 0.0:
-        nr = 0.0
-    elif nr > 1.0:
-        nr = 1.0
-    if ng < 0.0:
-        ng = 0.0
-    elif ng > 1.0:
-        ng = 1.0
-    if nb < 0.0:
-        nb = 0.0
-    elif nb > 1.0:
-        nb = 1.0
-
-    buffer_idx[y, x] = int(luminance * (chars_len - 1))
-    buffer_rgb[y, x, 0] = nr
-    buffer_rgb[y, x, 1] = ng
-    buffer_rgb[y, x, 2] = nb
+    buffer_rgb[y, x, 0] = r / max_c
+    buffer_rgb[y, x, 1] = g / max_c
+    buffer_rgb[y, x, 2] = b / max_c
+    luminance_buffer[y, x] = lum
+    edge_buffer[y, x] = edge
 
 
 def render_frame_buffer(W, H, aspect, scene_time, camera_angle, dt, chars):
     _ = dt
-    global _rng_states, _rng_size
+    global _rng_states, _rng_size, _prev_camera_state
 
     light = get_light()
 
@@ -546,6 +840,7 @@ def render_frame_buffer(W, H, aspect, scene_time, camera_angle, dt, chars):
     hard_shadow_on = int(config.LIGHTING["hard_shadows"])
     reflection_on = int(config.LIGHTING["reflections"])
     refraction_on = int(config.LIGHTING["refraction"])
+    fresnel_on = int(config.LIGHTING.get("fresnel", 1))
 
     exposure = np.float32(config.RENDER.get("exposure", 1.0))
     gamma = np.float32(config.RENDER.get("gamma", 1.0))
@@ -554,15 +849,35 @@ def render_frame_buffer(W, H, aspect, scene_time, camera_angle, dt, chars):
     ro, forward, right, up = get_camera(camera_angle)
     spheres, boxes, plane_y = get_scene_flat(scene_time)
 
-    buffer_idx = np.zeros((H, W), dtype=np.int32)
+    scene_changed = _scene_changed(spheres, boxes, plane_y)
+    camera_state = _camera_state(ro, forward, right, up)
+    camera_changed = _prev_camera_state is None or not np.allclose(_prev_camera_state, camera_state, atol=1e-6)
+    _prev_camera_state = camera_state
+
+    _ensure_device_scene(spheres, boxes)
+
+    if _accum_shape != (H, W):
+        _reset_accumulation(W, H)
+    elif scene_changed or camera_changed:
+        _reset_accumulation(W, H)
+
+    sample_rgb = np.zeros((H, W, 3), dtype=np.float32)
+    sample_depth = np.zeros((H, W), dtype=np.float32)
+    sample_normal = np.zeros((H, W, 3), dtype=np.float32)
+    sample_used = np.zeros((H, W), dtype=np.float32)
+
+    luminance_buffer = np.zeros((H, W), dtype=np.float32)
+    edge_buffer = np.zeros((H, W), dtype=np.float32)
     buffer_rgb = np.zeros((H, W, 3), dtype=np.float32)
 
-    d_buffer_idx = cuda.to_device(buffer_idx)
+    d_sample_rgb = cuda.to_device(sample_rgb)
+    d_sample_depth = cuda.to_device(sample_depth)
+    d_sample_normal = cuda.to_device(sample_normal)
+    d_sample_used = cuda.to_device(sample_used)
     d_buffer_rgb = cuda.to_device(buffer_rgb)
+    d_luminance = cuda.to_device(luminance_buffer)
+    d_edge = cuda.to_device(edge_buffer)
 
-    d_spheres = cuda.to_device(spheres.astype(np.float32))
-    d_boxes = cuda.to_device(boxes.astype(np.float32))
-    d_materials = cuda.to_device(MATERIALS.astype(np.float32))
     d_ro = cuda.to_device(ro.astype(np.float32))
     d_forward = cuda.to_device(forward.astype(np.float32))
     d_right = cuda.to_device(right.astype(np.float32))
@@ -578,9 +893,11 @@ def render_frame_buffer(W, H, aspect, scene_time, camera_angle, dt, chars):
     threads = (16, 16)
     blocks = ((W + threads[0] - 1) // threads[0], (H + threads[1] - 1) // threads[1])
 
-    render_kernel[blocks, threads](
-        d_buffer_idx,
-        d_buffer_rgb,
+    render_sample_kernel[blocks, threads](
+        d_sample_rgb,
+        d_sample_depth,
+        d_sample_normal,
+        d_sample_used,
         W,
         H,
         np.float32(aspect),
@@ -592,7 +909,7 @@ def render_frame_buffer(W, H, aspect, scene_time, camera_angle, dt, chars):
         hard_shadow_on,
         reflection_on,
         refraction_on,
-        len(chars),
+        fresnel_on,
         np.float32(light[0]),
         np.float32(light[1]),
         np.float32(light[2]),
@@ -600,18 +917,56 @@ def render_frame_buffer(W, H, aspect, scene_time, camera_angle, dt, chars):
         d_forward,
         d_right,
         d_up,
-        d_spheres,
-        d_boxes,
+        _d_spheres,
+        _d_boxes,
         np.float32(plane_y),
         diffuse_gi_strength,
+        _d_materials,
+        rng_states,
+        _d_accum_rgb,
+        _d_sample_count,
+    )
+
+    accumulate_kernel[blocks, threads](_d_accum_rgb, _d_sample_count, d_sample_rgb, d_sample_used)
+
+    postprocess_kernel[blocks, threads](
+        d_buffer_rgb,
+        d_luminance,
+        d_edge,
+        _d_accum_rgb,
+        _d_sample_count,
+        d_sample_depth,
+        d_sample_normal,
+        W,
+        H,
         exposure,
         gamma,
-        d_materials,
+        FOG_DENSITY,
         rng_states,
     )
     cuda.synchronize()
 
-    return d_buffer_idx.copy_to_host(), d_buffer_rgb.copy_to_host()
+    luminance_buffer = d_luminance.copy_to_host()
+    edge_buffer = d_edge.copy_to_host()
+    buffer_rgb = d_buffer_rgb.copy_to_host()
+
+    # Adaptive character ramp from luminance histogram (vectorized, no Python pixel loops)
+    hist, bin_edges = np.histogram(luminance_buffer, bins=max(8, min(128, len(chars))), range=(0.0, 1.0))
+    cdf = np.cumsum(hist).astype(np.float32)
+    if cdf[-1] > 0.0:
+        cdf /= cdf[-1]
+        bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
+        remapped = np.interp(luminance_buffer.ravel(), bin_centers, cdf).reshape(luminance_buffer.shape)
+    else:
+        remapped = luminance_buffer
+
+    char_scale = float(len(chars) - 1)
+    idx = np.clip((remapped * char_scale).astype(np.int32), 0, len(chars) - 1)
+
+    strong_edge_idx = int(0.88 * char_scale)
+    idx = np.where(edge_buffer > 0.28, np.maximum(idx, strong_edge_idx), idx)
+
+    return idx.astype(np.int32), buffer_rgb
 
 
 def draw_buffer(surface, buffer_idx, chars, char_cache, char_w, char_h, buffer_rgb=None):
