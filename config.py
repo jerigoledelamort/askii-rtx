@@ -27,14 +27,14 @@ BAKE = {
 # -------- RENDER --------
 RENDER = {
     "chars": " .'`^\",:;Il!i~+_-?][}{1)(|\\/tfjrxnuvczXYUJCLQ0OZmwqpdbkhao*#MW&8%B@$",
-    "bounces": 12,
-    "samples": 6
+    "bounces": 1,
+    "samples": 1
 }
 
 # -------- FONT --------
 FONT = {
     "name": "Consolas",
-    "size": 6
+    "size": 8
 }
 
 # -------- CAMERA --------
@@ -52,7 +52,7 @@ CAMERA = {
 
 # -------- LIGHT --------
 LIGHT = {
-    "direction": (0.5, 0.5, -1.0),
+    "direction": (0.0, -1.0, -0.2),
     "intensity": 1.0
 }
 

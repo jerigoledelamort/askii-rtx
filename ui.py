@@ -72,10 +72,11 @@ class Slider:
 
 
 class Checkbox:
-    def __init__(self, x, y, size, label, value):
+    def __init__(self, x, y, size, label, value, key):
         self.rect = pygame.Rect(x, y, size, size)
         self.label = label
         self.value = value
+        self.key = key
 
     def handle(self, event, x_offset=0, mouse_pos=None, scroll_offset=0):
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
@@ -139,15 +140,21 @@ class Dropdown:
         value_text = font.render(self.options[self.selected_index], True, (255, 255, 255))
         surface.blit(value_text, (rect.x + 8, rect.y + 5))
 
-        if self.expanded:
-            for i, option in enumerate(self.options):
-                option_rect = pygame.Rect(
-                    rect.x,
-                    rect.y + rect.h * (i + 1),
-                    rect.w,
-                    rect.h,
-                )
-                color = (110, 110, 110) if i == self.selected_index else (60, 60, 60)
-                pygame.draw.rect(surface, color, option_rect)
-                option_text = font.render(option, True, (255, 255, 255))
-                surface.blit(option_text, (option_rect.x + 8, option_rect.y + 5))
+    def draw_overlay(self, surface, font, y_offset=0, max_bottom=None):
+        if not self.expanded:
+            return
+
+        rect = self.rect.move(0, y_offset)
+        for i, option in enumerate(self.options):
+            option_rect = pygame.Rect(
+                rect.x,
+                rect.y + rect.h * (i + 1),
+                rect.w,
+                rect.h,
+            )
+            if max_bottom is not None and option_rect.bottom > max_bottom:
+                break
+            color = (110, 110, 110) if i == self.selected_index else (60, 60, 60)
+            pygame.draw.rect(surface, color, option_rect)
+            option_text = font.render(option, True, (255, 255, 255))
+            surface.blit(option_text, (option_rect.x + 8, option_rect.y + 5))

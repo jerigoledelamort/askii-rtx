@@ -1,6 +1,7 @@
 import pygame
 import sys
 import config
+import math
 
 from render import render_frame_buffer, draw_buffer
 from baker import bake_frames, save_frames
@@ -18,6 +19,7 @@ UI_PADDING_TOP = 20
 UI_SPACING = 40
 PANEL_PADDING = 20
 SCROLL_SPEED = 30
+FOOTER_HEIGHT = 120
 
 pygame.init()
 screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
@@ -84,18 +86,17 @@ def create_ui_controls(ui_width, selected_resolution):
         "render resolution",
     )
 
-    bake_button = Button(PANEL_PADDING, y + UI_SPACING * 8, slider_width, 30, "BAKE")
-    exit_button = Button(PANEL_PADDING, y + UI_SPACING * 9, slider_width, 30, "EXIT")
+    bake_button = Button(PANEL_PADDING, 0, slider_width, 30, "BAKE")
+    exit_button = Button(PANEL_PADDING, 0, slider_width, 30, "EXIT")
 
-    checkbox_start_y = y + UI_SPACING * 10
+    checkbox_start_y = y + UI_SPACING * 8
     checkboxes_local = [
-        Checkbox(PANEL_PADDING, checkbox_start_y + UI_SPACING * 0, 20, "Ambient", int(config.LIGHTING["ambient"])),
-        Checkbox(PANEL_PADDING, checkbox_start_y + UI_SPACING * 1, 20, "Sky", int(config.LIGHTING["sky"])),
-        Checkbox(PANEL_PADDING, checkbox_start_y + UI_SPACING * 2, 20, "Soft Shadows", int(config.LIGHTING["soft_shadows"])),
-        Checkbox(PANEL_PADDING, checkbox_start_y + UI_SPACING * 3, 20, "Hard Shadows", int(config.LIGHTING["hard_shadows"])),
-        Checkbox(PANEL_PADDING, checkbox_start_y + UI_SPACING * 4, 20, "Reflections", int(config.LIGHTING["reflections"])),
-        Checkbox(PANEL_PADDING, checkbox_start_y + UI_SPACING * 5, 20, "Refraction", int(config.LIGHTING["refraction"])),
-        Checkbox(PANEL_PADDING, checkbox_start_y + UI_SPACING * 6, 20, "Fresnel", int(config.LIGHTING["fresnel"])),
+        Checkbox(PANEL_PADDING, checkbox_start_y + UI_SPACING * 0, 20, "Ambient", int(config.LIGHTING["ambient"]), key="ambient"),
+        Checkbox(PANEL_PADDING, checkbox_start_y + UI_SPACING * 1, 20, "Sky", int(config.LIGHTING["sky"]), key="sky"),
+        Checkbox(PANEL_PADDING, checkbox_start_y + UI_SPACING * 2, 20, "Soft Shadows", int(config.LIGHTING["soft_shadows"]), key="soft_shadows"),
+        Checkbox(PANEL_PADDING, checkbox_start_y + UI_SPACING * 3, 20, "Hard Shadows", int(config.LIGHTING["hard_shadows"]), key="hard_shadows"),
+        Checkbox(PANEL_PADDING, checkbox_start_y + UI_SPACING * 4, 20, "Reflections", int(config.LIGHTING["reflections"]), key="reflections"),
+        Checkbox(PANEL_PADDING, checkbox_start_y + UI_SPACING * 5, 20, "Fresnel", int(config.LIGHTING["fresnel"]), key="fresnel"),
     ]
 
     return sliders_local, dropdown, bake_button, exit_button, checkboxes_local
@@ -107,13 +108,7 @@ def get_ui_content_height(sliders_local, dropdown_local, button_local, exit_butt
     for s in sliders_local:
         bottom = max(bottom, s.rect.bottom)
 
-    dropdown_bottom = dropdown_local.rect.bottom
-    if dropdown_local.expanded:
-        dropdown_bottom += dropdown_local.rect.h * len(dropdown_local.options)
-    bottom = max(bottom, dropdown_bottom)
-
-    bottom = max(bottom, button_local.rect.bottom)
-    bottom = max(bottom, exit_button_local.rect.bottom)
+    bottom = max(bottom, dropdown_local.rect.bottom)
 
     for c in checkboxes_local:
         bottom = max(bottom, c.rect.bottom)
@@ -124,11 +119,18 @@ def get_ui_content_height(sliders_local, dropdown_local, button_local, exit_butt
 def clamp_scroll():
     global scroll_offset
     content_height = get_ui_content_height(sliders, resolution_dropdown, bake_button, exit_button, checkboxes)
-    max_scroll = max(0, content_height - UI_HEIGHT)
+    scroll_area_height = max(0, UI_HEIGHT - FOOTER_HEIGHT)
+    max_scroll = max(0, content_height - scroll_area_height)
     scroll_offset = max(0, min(scroll_offset, max_scroll))
 
 
+def layout_footer_buttons():
+    bake_button.rect.y = UI_HEIGHT - 80
+    exit_button.rect.y = UI_HEIGHT - 40
+
+
 sliders, resolution_dropdown, bake_button, exit_button, checkboxes = create_ui_controls(UI_WIDTH, resolution_index)
+layout_footer_buttons()
 
 
 def apply_resolution(index):
@@ -144,6 +146,7 @@ def apply_resolution(index):
 
     render_surface = pygame.Surface((RENDER_WIDTH, RENDER_HEIGHT))
     sliders, resolution_dropdown, bake_button, exit_button, checkboxes = create_ui_controls(UI_WIDTH, resolution_index)
+    layout_footer_buttons()
     scroll_offset = 0
     clamp_scroll()
 
@@ -160,6 +163,12 @@ def get_render_layout():
 
 def is_inside_ui(pos):
     return pos[0] >= (DISPLAY_WIDTH - UI_WIDTH)
+
+
+def is_inside_ui_scroll_area(pos):
+    if not is_inside_ui(pos):
+        return False
+    return pos[1] < (UI_HEIGHT - FOOTER_HEIGHT)
 
 
 if mode == "bake":
@@ -189,29 +198,35 @@ while running:
                 DISPLAY_WIDTH, DISPLAY_HEIGHT = screen.get_size()
                 UI_HEIGHT = DISPLAY_HEIGHT
                 ui_surface = pygame.Surface((UI_WIDTH, UI_HEIGHT))
+                layout_footer_buttons()
                 clamp_scroll()
 
         if event.type == pygame.MOUSEWHEEL:
             mouse_pos = pygame.mouse.get_pos()
-            if is_inside_ui(mouse_pos):
+            if is_inside_ui_scroll_area(mouse_pos):
                 scroll_offset -= event.y * SCROLL_SPEED
                 clamp_scroll()
 
         if event.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEMOTION):
             if hasattr(event, "pos") and is_inside_ui(event.pos):
                 ui_mouse_pos = (event.pos[0] - (DISPLAY_WIDTH - UI_WIDTH), event.pos[1])
-                bake_button.handle(event, mouse_pos=ui_mouse_pos, scroll_offset=scroll_offset)
-                exit_button.handle(event, mouse_pos=ui_mouse_pos, scroll_offset=scroll_offset)
-                for s in sliders:
-                    s.handle(event, mouse_pos=ui_mouse_pos, scroll_offset=scroll_offset)
-                resolution_dropdown.handle(event, mouse_pos=ui_mouse_pos, scroll_offset=scroll_offset)
-                for c in checkboxes:
-                    c.handle(event, mouse_pos=ui_mouse_pos, scroll_offset=scroll_offset)
+                if ui_mouse_pos[1] >= (UI_HEIGHT - FOOTER_HEIGHT):
+                    bake_button.handle(event, mouse_pos=ui_mouse_pos, scroll_offset=0)
+                    exit_button.handle(event, mouse_pos=ui_mouse_pos, scroll_offset=0)
+
+                    if event.type == pygame.MOUSEBUTTONDOWN:
+                        resolution_dropdown.handle(event, mouse_pos=ui_mouse_pos, scroll_offset=scroll_offset)
+                else:
+                    for s in sliders:
+                        s.handle(event, mouse_pos=ui_mouse_pos, scroll_offset=scroll_offset)
+                    resolution_dropdown.handle(event, mouse_pos=ui_mouse_pos, scroll_offset=scroll_offset)
+                    for c in checkboxes:
+                        c.handle(event, mouse_pos=ui_mouse_pos, scroll_offset=scroll_offset)
         elif event.type == pygame.MOUSEBUTTONUP:
             if hasattr(event, "pos") and is_inside_ui(event.pos):
                 ui_mouse_pos = (event.pos[0] - (DISPLAY_WIDTH - UI_WIDTH), event.pos[1])
-                bake_button.handle(event, mouse_pos=ui_mouse_pos, scroll_offset=scroll_offset)
-                exit_button.handle(event, mouse_pos=ui_mouse_pos, scroll_offset=scroll_offset)
+                bake_button.handle(event, mouse_pos=ui_mouse_pos, scroll_offset=0)
+                exit_button.handle(event, mouse_pos=ui_mouse_pos, scroll_offset=0)
                 resolution_dropdown.handle(event, mouse_pos=ui_mouse_pos, scroll_offset=scroll_offset)
             else:
                 resolution_dropdown.expanded = False
@@ -232,13 +247,8 @@ while running:
     config.BAKE["bounces"] = int(sliders[4].value)
     config.BAKE["samples"] = int(sliders[5].value)
     config.BAKE["font_size"] = int(sliders[6].value)
-    config.LIGHTING["ambient"] = int(checkboxes[0].value)
-    config.LIGHTING["sky"] = int(checkboxes[1].value)
-    config.LIGHTING["soft_shadows"] = int(checkboxes[2].value)
-    config.LIGHTING["hard_shadows"] = int(checkboxes[3].value)
-    config.LIGHTING["reflections"] = int(checkboxes[4].value)
-    config.LIGHTING["refraction"] = int(checkboxes[5].value)
-    config.LIGHTING["fresnel"] = int(checkboxes[6].value)
+    for c in checkboxes:
+        config.LIGHTING[c.key] = int(c.value)
 
     if resolution_dropdown.changed:
         resolution_dropdown.changed = False
@@ -246,7 +256,7 @@ while running:
 
     clamp_scroll()
 
-    camera_angle += config.CAMERA["speed"] * dt * 2 * 3.1415926
+    camera_angle = math.sin(scene_time * config.CAMERA["speed"]) * 0.5
 
     if mode == "realtime":
         buffer = render_frame_buffer(W, H, aspect, scene_time, camera_angle, dt, chars)
@@ -260,14 +270,30 @@ while running:
         if frame_index >= len(frames):
             frame_index = 0
 
+    scroll_area_height = max(0, UI_HEIGHT - FOOTER_HEIGHT)
+    clip_rect = pygame.Rect(0, 0, UI_WIDTH, scroll_area_height)
+    ui_surface.set_clip(clip_rect)
+
     for s in sliders:
         s.draw(ui_surface, ui_font, -scroll_offset)
     resolution_dropdown.draw(ui_surface, ui_font, -scroll_offset)
     for c in checkboxes:
         c.draw(ui_surface, ui_font, -scroll_offset)
 
-    bake_button.draw(ui_surface, ui_font, -scroll_offset)
-    exit_button.draw(ui_surface, ui_font, -scroll_offset)
+    ui_surface.set_clip(None)
+
+    footer_rect = pygame.Rect(0, UI_HEIGHT - FOOTER_HEIGHT, UI_WIDTH, FOOTER_HEIGHT)
+    pygame.draw.rect(ui_surface, (32, 32, 32), footer_rect)
+    pygame.draw.line(ui_surface, (64, 64, 64), (0, UI_HEIGHT - FOOTER_HEIGHT), (UI_WIDTH, UI_HEIGHT - FOOTER_HEIGHT), 1)
+
+    bake_button.draw(ui_surface, ui_font, 0)
+    exit_button.draw(ui_surface, ui_font, 0)
+    resolution_dropdown.draw_overlay(
+        ui_surface,
+        ui_font,
+        0,
+        max_bottom=UI_HEIGHT - FOOTER_HEIGHT,
+    )
     if bake_button.clicked:
         bake_button.clicked = False
 

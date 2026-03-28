@@ -1,5 +1,6 @@
 import math
 import config
+import numpy as np
 
 
 def _resolve_axis(axis):
@@ -59,38 +60,54 @@ def _compute_object(base_pos, base_scale, position_cfg, scale_cfg, angle, is_box
 
 
 def get_scene_flat(time):
-    angle = time * 2.0 * math.pi
-    scene_cfg = config.SCENE
 
-    s_cfg = scene_cfg["sphere"]
-    sx, sy, sz, sr, _, _ = _compute_object(
-        s_cfg["base"]["pos"],
-        (s_cfg["base"]["radius"], 0.0, 0.0),
-        s_cfg["position"],
-        s_cfg["scale"],
-        angle,
-        False,
-    )
+    spheres = np.array([
+        [-1.2, -0.3, -0.5, 0.3, 0],
+        [-0.4, -0.3, -0.3, 0.3, 1],
+        [ 0.0, -0.3,  0.2, 0.3, 2],
+        [ 0.6, -0.3, -0.2, 0.3, 3],
+        [ 1.2, -0.3, -0.4, 0.3, 4],
+    ], dtype=np.float32)
 
-    b_cfg = scene_cfg["box"]
-    bx, by, bz, bsx, bsy, bsz = _compute_object(
-        b_cfg["base"]["pos"],
-        b_cfg["base"]["size"],
-        b_cfg["position"],
-        b_cfg["scale"],
-        angle,
-        True,
-    )
+    boxes = np.array([
+        # куб
+        [0.8, -0.1, 0.5, 0.3, 0.3, 0.3, 2],
 
-    plane_h = scene_cfg["plane"]["height"]
+        # стены
+        [-2.0, 0.0, 0.0, 0.1, 2.0, 2.0, 0],
+        [ 2.0, 0.0, 0.0, 0.1, 2.0, 2.0, 0],
+        [ 0.0, 0.0, 2.0, 2.0, 2.0, 0.1, 0],
+    ], dtype=np.float32)
 
-    return sx, sy, sz, sr, bx, by, bz, bsx, bsy, bsz, plane_h
+    plane_y = -0.6
+
+    return spheres, boxes, plane_y
 
 
-def get_scene(time):
-    sx, sy, sz, sr, bx, by, bz, bsx, bsy, bsz, plane_h = get_scene_flat(time)
-    return {
-        "sphere": {"pos": (sx, sy, sz), "radius": sr},
-        "box": {"pos": (bx, by, bz), "size": (bsx, bsy, bsz)},
-        "plane": {"height": plane_h},
-    }
+def get_scene_flat(time):
+    # --- СФЕРЫ ---
+    # (x, y, z, radius, material_id)
+    spheres = [
+        (-1.2, -0.3, -0.5, 0.3, 0),  # матовый
+        (-0.4, -0.3, -0.3, 0.3, 1),  # глянцевый
+        (0.0, -0.3, 0.2, 0.3, 2),    # смешанный
+        (0.6, -0.3, -0.2, 0.3, 3),   # стекло
+        (1.2, -0.3, -0.4, 0.3, 4),   # зеркало
+    ]
+
+    # --- БОКСЫ ---
+    # (x, y, z, sx, sy, sz, material_id)
+    boxes = [
+        # куб
+        (0.8, -0.1, 0.5, 0.3, 0.3, 0.3, 2),
+
+        # стены (ВАЖНО — это просто боксы)
+        (-2.0, 0.0, 0.0, 0.1, 2.0, 2.0, 0),  # левая
+        (2.0, 0.0, 0.0, 0.1, 2.0, 2.0, 0),   # правая
+        (0.0, 0.0, 2.0, 2.0, 2.0, 0.1, 0),   # задняя
+    ]
+
+    # пол
+    plane_y = -0.6
+
+    return spheres, boxes, plane_y
