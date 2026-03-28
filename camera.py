@@ -1,48 +1,44 @@
 import math
+import numpy as np
+
 import config
 
-def get_camera(angle):  # 🔥 теперь это уже угол, не время
+
+def get_camera(angle):
     cam = config.CAMERA
 
     radius = cam["radius"]
     height = cam["height"]
-
     mode = cam.get("mode", "orbit")
 
     if mode == "orbit":
         x = radius * math.cos(angle)
         z = radius * math.sin(angle)
         y = height
-
     elif mode == "wave":
         x = radius * math.cos(angle)
         z = radius * math.sin(angle)
         y = height + math.sin(angle * cam["wave_speed"]) * cam["wave_amplitude"]
-
     else:
-        x, y, z = 0, height, radius
+        x, y, z = 0.0, height, radius
 
-    ro = (x, y, z)
+    ro = np.array([x, y, z], dtype=np.float32)
 
-    target = (0, 0, 0)
+    forward = np.array([-ro[0], -ro[1], -ro[2]], dtype=np.float32)
+    fl = math.sqrt(forward[0] * forward[0] + forward[1] * forward[1] + forward[2] * forward[2])
+    forward /= fl
 
-    forward = (
-        target[0] - ro[0],
-        target[1] - ro[1],
-        target[2] - ro[2]
-    )
+    right = np.array([forward[2], 0.0, -forward[0]], dtype=np.float32)
+    rl = math.sqrt(right[0] * right[0] + right[2] * right[2])
+    right /= rl
 
-    fl = math.sqrt(sum(i*i for i in forward))
-    forward = tuple(i / fl for i in forward)
-
-    right = (forward[2], 0, -forward[0])
-    rl = math.sqrt(right[0]**2 + right[2]**2)
-    right = (right[0]/rl, 0, right[2]/rl)
-
-    up = (
-        right[1]*forward[2] - right[2]*forward[1],
-        right[2]*forward[0] - right[0]*forward[2],
-        right[0]*forward[1] - right[1]*forward[0]
+    up = np.array(
+        [
+            right[1] * forward[2] - right[2] * forward[1],
+            right[2] * forward[0] - right[0] * forward[2],
+            right[0] * forward[1] - right[1] * forward[0],
+        ],
+        dtype=np.float32,
     )
 
     return ro, forward, right, up
