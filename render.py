@@ -5,7 +5,8 @@ from numba import njit
 import config
 from camera import get_camera
 from scene import get_scene_flat
-from lighting import get_light, shade
+from lighting import get_light
+from tracer import trace_ray
 
 USE_NUMBA = True
 
@@ -25,7 +26,6 @@ def _render_frame_buffer_numba(
     hard_shadow_on,
     reflection_on,
     refraction_on,
-    fresnel_on,
     chars_len,
     light,
     ro,
@@ -68,7 +68,7 @@ def _render_frame_buffer_numba(
                 rl = math.sqrt(rdx * rdx + rdy * rdy + rdz * rdz)
                 rd = (rdx / rl, rdy / rl, rdz / rl)
 
-                color += shade(
+                color += trace_ray(
                     ro,
                     rd,
                     light,
@@ -79,7 +79,6 @@ def _render_frame_buffer_numba(
                     hard_shadow_on,
                     reflection_on,
                     refraction_on,
-                    fresnel_on,
                     sphere_x,
                     sphere_y,
                     sphere_z,
@@ -115,7 +114,6 @@ def _render_frame_buffer_python(
     hard_shadow_on,
     reflection_on,
     refraction_on,
-    fresnel_on,
     chars_len,
     light,
     ro,
@@ -157,7 +155,7 @@ def _render_frame_buffer_python(
                 rl = math.sqrt(rdx * rdx + rdy * rdy + rdz * rdz)
                 rd = (rdx / rl, rdy / rl, rdz / rl)
 
-                color += shade(
+                color += trace_ray(
                     ro,
                     rd,
                     light,
@@ -168,7 +166,6 @@ def _render_frame_buffer_python(
                     hard_shadow_on,
                     reflection_on,
                     refraction_on,
-                    fresnel_on,
                     sphere_x,
                     sphere_y,
                     sphere_z,
@@ -199,7 +196,6 @@ def render_frame_buffer(W, H, aspect, scene_time, camera_angle, dt, chars):
     hard_shadow_on = int(config.LIGHTING["hard_shadows"])
     reflection_on = int(config.LIGHTING["reflections"])
     refraction_on = int(config.LIGHTING["refraction"])
-    fresnel_on = int(config.LIGHTING["fresnel"])
 
     ro, forward, right, up = get_camera(camera_angle)
     scene = get_scene_flat(scene_time)
@@ -219,7 +215,6 @@ def render_frame_buffer(W, H, aspect, scene_time, camera_angle, dt, chars):
         hard_shadow_on,
         reflection_on,
         refraction_on,
-        fresnel_on,
         len(chars),
         light,
         ro,
