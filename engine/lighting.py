@@ -1,12 +1,12 @@
 import math
 from numba import njit
 
-import config
-from materials import MATERIALS
+from config import default as config
+from engine.materials import MATERIALS
 
 
-def get_light():
-    light = config.LIGHT["direction"]
+def get_light(light_settings):
+    light = light_settings["direction"]
     l = math.sqrt(light[0] * light[0] + light[1] * light[1] + light[2] * light[2])
     return (
         light[0] / l,

@@ -1,13 +1,14 @@
 import pygame
 import sys
-import config
+from config import default as config
 import math
 
-from render import render_frame_buffer, draw_buffer
-from baker import bake_frames, save_frames
-from video_ascii import save_video_ascii
-from char_calibration import build_char_ramp
-from ui import Slider, Button, Dropdown, Checkbox
+from engine.core import Engine
+from engine.render import draw_buffer
+from pipeline.baker import bake_frames, save_frames
+from pipeline.video_ascii import save_video_ascii
+from utils.char_calibration import build_char_ramp
+from apps.viewer.ui import Slider, Button, Dropdown, Checkbox
 
 FPS = config.WINDOW["fps"]
 
@@ -43,6 +44,7 @@ char_cache = {
 }
 
 mode = config.MODE["type"]
+engine = Engine(config)
 
 frames = None
 frame_index = 0
@@ -172,7 +174,7 @@ def is_inside_ui_scroll_area(pos):
 
 
 if mode == "bake":
-    frames = bake_frames(W, H, aspect, chars)
+    frames = bake_frames(engine, W, H, aspect, chars)
     save_frames(frames)
     save_video_ascii(frames, chars, char_cache, char_w, char_h)
     print("BAKE DONE")
@@ -259,7 +261,9 @@ while running:
     camera_angle = math.sin(scene_time * config.CAMERA["speed"]) * 0.5
 
     if mode == "realtime":
-        buffer_idx, buffer_rgb = render_frame_buffer(W, H, aspect, scene_time, camera_angle, dt, chars)
+        buffer_idx, buffer_rgb = engine.render(
+            camera_angle, dt, chars, W, H, aspect
+        )
         draw_buffer(render_surface, buffer_idx, chars, char_cache, char_w, char_h, buffer_rgb)
 
     elif mode == "playback":
@@ -305,7 +309,7 @@ while running:
         config.RENDER["samples"] = config.BAKE["samples"]
         config.RENDER["bounces"] = config.BAKE["bounces"]
 
-        frames = bake_frames(W, H, aspect, chars)
+        frames = bake_frames(engine, W, H, aspect, chars)
         save_frames(frames)
         save_video_ascii(frames, chars, char_cache, char_w, char_h)
 

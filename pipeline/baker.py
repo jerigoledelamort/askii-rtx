@@ -1,11 +1,9 @@
-import config
-from render import render_frame_buffer
-from video_ascii import save_video_ascii
+from config import default as config
 import pickle
 import math
 
 
-def bake_frames(W, H, aspect, chars):
+def bake_frames(engine, W, H, aspect, chars):
     total_frames = config.BAKE["frames"]
     duration = 1 / config.CAMERA["speed"]
 
@@ -18,12 +16,14 @@ def bake_frames(W, H, aspect, chars):
         camera_angle = t * config.CAMERA["speed"] * 2 * math.pi
         dt = 1/60
 
-        buffer_idx, buffer_rgb = render_frame_buffer(
-            W, H, aspect,
+        buffer_idx, buffer_rgb = engine.render(
             scene_time,
             camera_angle,
             dt,
-            chars
+            chars,
+            W,
+            H,
+            aspect
         )
 
         frames.append((buffer_idx, buffer_rgb))

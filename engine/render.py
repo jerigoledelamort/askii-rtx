@@ -4,11 +4,8 @@ import pygame
 from numba import cuda
 from numba.cuda.random import create_xoroshiro128p_states, xoroshiro128p_uniform_float32
 
-import config
-from camera import get_camera
-from scene import get_scene_flat
-from lighting import get_light
-from materials import MATERIALS
+from engine.lighting import get_light
+from engine.materials import MATERIALS
 
 
 HIT_BIAS = np.float32(1e-3)
@@ -26,9 +23,6 @@ _rng_size = 0
 _d_spheres = None
 _d_boxes = None
 _d_materials = None
-_prev_spheres = None
-_prev_boxes = None
-_prev_plane = None
 
 _d_accum_rgb = None
 _d_sample_count = None
@@ -36,30 +30,28 @@ _accum_shape = None
 _prev_camera_state = None
 
 
+class RendererState:
+    def __init__(self):
+        self.rng_states = None
+        self.rng_size = 0
+
+        self.accum_rgb = None
+        self.sample_count = None
+        self.accum_shape = None
+
+        self.prev_camera_state = None
+
+
+def reset_accumulation_buffers():
+    global _d_accum_rgb, _d_sample_count, _accum_shape, _prev_camera_state
+    _d_accum_rgb = None
+    _d_sample_count = None
+    _accum_shape = None
+    _prev_camera_state = None
+
+
 def _camera_state(ro, forward, right, up):
     return np.concatenate((ro, forward, right, up)).astype(np.float32)
-
-
-def _scene_changed(spheres, boxes, plane_y):
-    global _prev_spheres, _prev_boxes, _prev_plane
-
-    changed = (
-        _prev_spheres is None
-        or _prev_boxes is None
-        or _prev_plane is None
-        or _prev_spheres.shape != spheres.shape
-        or _prev_boxes.shape != boxes.shape
-        or not np.array_equal(_prev_spheres, spheres)
-        or not np.array_equal(_prev_boxes, boxes)
-        or float(_prev_plane) != float(plane_y)
-    )
-
-    if changed:
-        _prev_spheres = spheres.copy()
-        _prev_boxes = boxes.copy()
-        _prev_plane = float(plane_y)
-
-    return changed
 
 
 def _ensure_device_scene(spheres, boxes):
@@ -79,11 +71,10 @@ def _ensure_device_scene(spheres, boxes):
         _d_materials = cuda.to_device(MATERIALS.astype(np.float32))
 
 
-def _reset_accumulation(W, H):
-    global _d_accum_rgb, _d_sample_count, _accum_shape
-    _d_accum_rgb = cuda.to_device(np.zeros((H, W, 3), dtype=np.float32))
-    _d_sample_count = cuda.to_device(np.zeros((H, W), dtype=np.float32))
-    _accum_shape = (H, W)
+def _reset_accumulation(state, W, H):
+    state.accum_rgb = cuda.to_device(np.zeros((H, W, 3), dtype=np.float32))
+    state.sample_count = cuda.to_device(np.zeros((H, W), dtype=np.float32))
+    state.accum_shape = (H, W)
 
 
 @cuda.jit(device=True)
@@ -905,42 +896,96 @@ def postprocess_kernel(
     edge_buffer[y, x] = edge
 
 
-def render_frame_buffer(W, H, aspect, scene_time, camera_angle, dt, chars):
-    _ = dt
-    global _rng_states, _rng_size, _prev_camera_state
+def ascii_map(luminance_buffer, edge_buffer, chars):
+    hist, bin_edges = np.histogram(
+        luminance_buffer,
+        bins=max(8, min(128, len(chars))),
+        range=(0.0, 1.0)
+    )
 
-    light = get_light()
+    cdf = np.cumsum(hist).astype(np.float32)
 
-    samples = int(config.RENDER["samples"])
-    bounces = int(config.RENDER["bounces"])
+    if cdf[-1] > 0.0:
+        cdf /= cdf[-1]
+        bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
+        remapped = np.interp(
+            luminance_buffer.ravel(),
+            bin_centers,
+            cdf
+        ).reshape(luminance_buffer.shape)
+    else:
+        remapped = luminance_buffer
 
-    ambient_on = int(config.LIGHTING["ambient"])
-    sky_on = int(config.LIGHTING["sky"])
-    soft_shadow_on = int(config.LIGHTING["soft_shadows"])
-    hard_shadow_on = int(config.LIGHTING["hard_shadows"])
-    reflection_on = int(config.LIGHTING["reflections"])
-    refraction_on = int(config.LIGHTING["refraction"])
-    fresnel_on = int(config.LIGHTING.get("fresnel", 1))
+    char_scale = float(len(chars) - 1)
+    idx = np.clip((remapped * char_scale).astype(np.int32), 0, len(chars) - 1)
 
-    exposure = np.float32(config.RENDER.get("exposure", 1.0))
-    gamma = np.float32(config.RENDER.get("gamma", 1.0))
-    diffuse_gi_strength = np.float32(config.RENDER.get("diffuse_gi_strength", 0.25))
+    strong_edge_idx = int(0.88 * char_scale)
+    idx = np.where(edge_buffer > 0.28, np.maximum(idx, strong_edge_idx), idx)
 
-    ro, forward, right, up = get_camera(camera_angle)
-    spheres, boxes, plane_y = get_scene_flat(scene_time)
+    return idx.astype(np.int32)
 
-    scene_changed = _scene_changed(spheres, boxes, plane_y)
+
+def render_frame_buffer(
+    W, H, aspect,
+    scene_data,
+    camera_data,
+    render_settings,
+    lighting_settings,
+    light_data,
+    chars,
+    state: RendererState
+):
+
+    # ---- unpack scene ----
+    spheres = scene_data["spheres"]
+    boxes = scene_data["boxes"]
+    plane_y = scene_data["plane_y"]
+
+    d_spheres = scene_data["d_spheres"]
+    d_boxes = scene_data["d_boxes"]
+    d_materials = scene_data["d_materials"]
+
+    # ---- unpack camera ----
+    ro = camera_data["ro"]
+    forward = camera_data["forward"]
+    right = camera_data["right"]
+    up = camera_data["up"]
+
+    # ---- light ----
+    light = get_light(light_data)
+
+    samples = int(render_settings["samples"])
+    bounces = int(render_settings["bounces"])
+
+    ambient_on = int(lighting_settings["ambient"])
+    sky_on = int(lighting_settings["sky"])
+    soft_shadow_on = int(lighting_settings["soft_shadows"])
+    hard_shadow_on = int(lighting_settings["hard_shadows"])
+    reflection_on = int(lighting_settings["reflections"])
+    refraction_on = int(lighting_settings["refraction"])
+    fresnel_on = int(lighting_settings.get("fresnel", 1))
+
+    exposure = np.float32(render_settings.get("exposure", 1.0))
+    gamma = np.float32(render_settings.get("gamma", 1.0))
+    diffuse_gi_strength = np.float32(render_settings.get("diffuse_gi_strength", 0.25))
+
+    # ---- change detection ----
+    scene_changed = scene_data["changed"]
     camera_state = _camera_state(ro, forward, right, up)
-    camera_changed = _prev_camera_state is None or not np.allclose(_prev_camera_state, camera_state, atol=1e-6)
-    _prev_camera_state = camera_state
 
-    _ensure_device_scene(spheres, boxes)
+    camera_changed = (
+        state.prev_camera_state is None
+        or not np.allclose(state.prev_camera_state, camera_state, atol=1e-6)
+    )
 
-    if _accum_shape != (H, W):
-        _reset_accumulation(W, H)
+    state.prev_camera_state = camera_state
+
+    if state.accum_shape != (H, W):
+        _reset_accumulation(state, W, H)
     elif scene_changed or camera_changed:
-        _reset_accumulation(W, H)
+        _reset_accumulation(state, W, H)
 
+    # ---- buffers ----
     sample_rgb = np.zeros((H, W, 3), dtype=np.float32)
     sample_depth = np.zeros((H, W), dtype=np.float32)
     sample_normal = np.zeros((H, W, 3), dtype=np.float32)
@@ -963,15 +1008,18 @@ def render_frame_buffer(W, H, aspect, scene_time, camera_angle, dt, chars):
     d_right = cuda.to_device(right.astype(np.float32))
     d_up = cuda.to_device(up.astype(np.float32))
 
+    # ---- RNG ----
     total_threads = W * H
-    if _rng_states is None or _rng_size != total_threads:
+    if state.rng_states is None or state.rng_size != total_threads:
         seed = np.random.randint(1, 1_000_000)
-        _rng_states = create_xoroshiro128p_states(total_threads, seed=seed)
-        _rng_size = total_threads
-    rng_states = _rng_states
+        state.rng_states = create_xoroshiro128p_states(total_threads, seed=seed)
+        state.rng_size = total_threads
 
+    rng_states = state.rng_states
+
+    # ---- launch ----
     threads = (16, 16)
-    blocks = ((W + threads[0] - 1) // threads[0], (H + threads[1] - 1) // threads[1])
+    blocks = ((W + 15) // 16, (H + 15) // 16)
 
     render_sample_kernel[blocks, threads](
         d_sample_rgb,
@@ -997,24 +1045,29 @@ def render_frame_buffer(W, H, aspect, scene_time, camera_angle, dt, chars):
         d_forward,
         d_right,
         d_up,
-        _d_spheres,
-        _d_boxes,
+        d_spheres,
+        d_boxes,
         np.float32(plane_y),
         diffuse_gi_strength,
-        _d_materials,
+        d_materials,
         rng_states,
-        _d_accum_rgb,
-        _d_sample_count,
+        state.accum_rgb,
+        state.sample_count,
     )
 
-    accumulate_kernel[blocks, threads](_d_accum_rgb, _d_sample_count, d_sample_rgb, d_sample_used)
+    accumulate_kernel[blocks, threads](
+        state.accum_rgb,
+        state.sample_count,
+        d_sample_rgb,
+        d_sample_used
+    )
 
     postprocess_kernel[blocks, threads](
         d_buffer_rgb,
         d_luminance,
         d_edge,
-        _d_accum_rgb,
-        _d_sample_count,
+        state.accum_rgb,
+        state.sample_count,
         d_sample_depth,
         d_sample_normal,
         W,
@@ -1024,29 +1077,14 @@ def render_frame_buffer(W, H, aspect, scene_time, camera_angle, dt, chars):
         FOG_DENSITY,
         rng_states,
     )
+
     cuda.synchronize()
 
     luminance_buffer = d_luminance.copy_to_host()
     edge_buffer = d_edge.copy_to_host()
     buffer_rgb = d_buffer_rgb.copy_to_host()
 
-    # Adaptive character ramp from luminance histogram (vectorized, no Python pixel loops)
-    hist, bin_edges = np.histogram(luminance_buffer, bins=max(8, min(128, len(chars))), range=(0.0, 1.0))
-    cdf = np.cumsum(hist).astype(np.float32)
-    if cdf[-1] > 0.0:
-        cdf /= cdf[-1]
-        bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
-        remapped = np.interp(luminance_buffer.ravel(), bin_centers, cdf).reshape(luminance_buffer.shape)
-    else:
-        remapped = luminance_buffer
-
-    char_scale = float(len(chars) - 1)
-    idx = np.clip((remapped * char_scale).astype(np.int32), 0, len(chars) - 1)
-
-    strong_edge_idx = int(0.88 * char_scale)
-    idx = np.where(edge_buffer > 0.28, np.maximum(idx, strong_edge_idx), idx)
-
-    return idx.astype(np.int32), buffer_rgb
+    return luminance_buffer, edge_buffer, buffer_rgb
 
 
 def draw_buffer(surface, buffer_idx, chars, char_cache, char_w, char_h, buffer_rgb=None):

@@ -2,9 +2,9 @@ import pygame
 import imageio
 import os
 from datetime import datetime
-import config
+from config import default as config
 
-from render import draw_buffer
+from engine.render import draw_buffer
 
 
 def save_video_ascii(frames, chars, char_cache, char_w, char_h):

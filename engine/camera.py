@@ -2,8 +2,7 @@ import math
 
 import numpy as np
 
-import config
-from scene import get_scene_flat
+from engine.scene import get_scene_flat
 
 
 def normalize(v):
@@ -122,12 +121,13 @@ def _resolve_camera_x_collision(desired_x, cy, cz, spheres, boxes, margin=0.3):
     return x
 
 
-def get_camera(angle):
-    base_radius = float(config.CAMERA["radius"])
-    height = float(config.CAMERA["height"])
-    margin = 0.3
+def get_camera(angle, camera_settings, scene_data):
+    base_radius = float(camera_settings["radius"])
+    height = float(camera_settings["height"])
 
-    spheres, boxes, _ = get_scene_flat(0.0)
+    spheres = scene_data["spheres"]
+    boxes = scene_data["boxes"]
+    margin = 0.3
 
     min_x, max_x, min_z, max_z = compute_scene_bounds(spheres, boxes)
     center = np.array(

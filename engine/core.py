@@ -1,0 +1,56 @@
+from engine.camera import get_camera
+from engine.render import render_frame_buffer, reset_accumulation_buffers
+from engine.render import RendererState
+from engine.scene import Scene
+from engine.render import ascii_map
+
+
+class Engine:
+    def __init__(self, config):
+        self.scene = Scene()
+        self.config = config
+        self.render_settings = config.RENDER
+        self.light_data = config.LIGHT
+        self.lighting_settings = config.LIGHTING
+        self.camera_settings = config.CAMERA
+
+        self.state = RendererState()
+
+    def render(self, camera_angle, dt, chars, W, H, aspect):
+        # 1. сцена
+        self.scene.update(dt)
+        scene_data = self.scene.get_data()
+
+        # 2. камера
+        ro, forward, right, up = get_camera(
+            camera_angle,
+            self.camera_settings,
+            scene_data
+        )
+
+        camera_data = {
+            "ro": ro,
+            "forward": forward,
+            "right": right,
+            "up": up
+        }
+
+        # 3. рендер
+        luminance, edge, rgb = render_frame_buffer(
+            W, H, aspect,
+            scene_data,
+            camera_data,
+            self.render_settings,
+            self.lighting_settings,
+            self.light_data,
+            chars,
+            self.state
+        )
+
+        # 4. ASCII (теперь это отдельный шаг)
+        buffer_idx = ascii_map(luminance, edge, chars)
+
+        return buffer_idx, rgb
+
+    def reset(self):
+        self.state = RendererState()

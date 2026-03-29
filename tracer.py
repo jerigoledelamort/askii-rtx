@@ -5,8 +5,8 @@ from numba import njit
 from geometry.sphere import hit_sphere
 from geometry.box import hit_box
 from geometry.plane import hit_plane
-from lighting import local_lighting, reflect_components
-from materials import MATERIALS
+from engine.lighting import local_lighting, reflect_components
+from engine.materials import MATERIALS
 
 
 HIT_BIAS = 1e-3
