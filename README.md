@@ -1,452 +1,128 @@
-# ASCII RTX — GPU ASCII Path Tracer (Python + CUDA)
+# ASCII RTX — интерактивный ASCII path tracer на Python + CUDA
 
-Полноценный интерактивный ASCII-рендерер на Python с трассировкой лучей/путей на GPU (Numba CUDA), постобработкой и экспортом анимации в `.mp4`.
+`askii-rtx` — это экспериментальный рендерер, который считает освещение на GPU (через `numba.cuda`), а выводит результат как цветной ASCII-кадр в `pygame`.
 
-Проект сочетает:
-- **реалтайм-превью** с управлением в UI;
-- **offline bake** кадров с повышенным качеством;
-- **конвертацию в цветной ASCII** с адаптивным выбором символов;
-- **материалы с отражением/преломлением/Fresnel** и стохастическим GI.
-
----
+Проект поддерживает:
+- realtime-просмотр сцены с UI-панелью;
+- офлайн bake кадров;
+- экспорт ASCII-видео в `.mp4`;
+- материалы с отражением/преломлением/Fresnel;
+- постобработку (тонмаппинг, edge boost, dither, туман).
 
 ## Содержание
-- [1. Возможности](#1-возможности)
-- [2. Технологический стек и зависимости](#2-технологический-стек-и-зависимости)
-- [3. Требования к окружению](#3-требования-к-окружению)
-- [4. Быстрый старт](#4-быстрый-старт)
-- [5. Режимы работы](#5-режимы-работы)
-- [6. Архитектура проекта](#6-архитектура-проекта)
-- [7. Пайплайн рендера (пошагово)](#7-пайплайн-рендера-пошагово)
-- [8. Конфигурация (`config.py`)](#8-конфигурация-configpy)
-- [9. UI и управление](#9-ui-и-управление)
-- [10. Сцена и материалы](#10-сцена-и-материалы)
-- [11. Bake и экспорт видео](#11-bake-и-экспорт-видео)
-- [12. Производительность и качество](#12-производительность-и-качество)
-- [13. Ограничения и известные нюансы](#13-ограничения-и-известные-нюансы)
-- [14. Отладка и troubleshooting](#14-отладка-и-troubleshooting)
-- [15. Как расширять проект](#15-как-расширять-проект)
+- [1. Структура проекта](#1-структура-проекта)
+- [2. Как запустить](#2-как-запустить)
+- [3. Режимы работы](#3-режимы-работы)
+- [4. Конфигурация](#4-конфигурация)
+- [5. Как устроен рендер-пайплайн](#5-как-устроен-рендер-пайплайн)
+- [6. Bake и экспорт видео](#6-bake-и-экспорт-видео)
+- [7. UI и управление](#7-ui-и-управление)
+- [8. Ограничения и замечания](#8-ограничения-и-замечания)
 
----
+## 1. Структура проекта
 
-## 1. Возможности
+```text
+askii-rtx/
+├── apps/viewer/main.py      # точка входа приложения (pygame + цикл + UI)
+├── apps/viewer/ui.py        # Slider / Checkbox / Dropdown / Button
+├── engine/core.py           # фасад Engine: scene -> camera -> render -> ascii
+├── engine/render.py         # CUDA kernels, accumulation, postprocess, ascii map
+├── engine/scene.py          # CPU/GPU-представление сцены
+├── engine/camera.py         # расчёт камеры + базовая коллизия
+├── engine/materials.py      # таблица материалов
+├── engine/lighting.py       # lighting helper-функции
+├── pipeline/baker.py        # офлайн рендер кадров + pickle
+├── pipeline/video_ascii.py  # сборка mp4 из ASCII-кадров
+├── config/default.py        # все runtime-настройки
+└── utils/char_calibration.py# сортировка символов по яркости
+```
 
-- GPU path tracing на **Numba CUDA kernels**.
-- Поддержка геометрии:
-  - sphere;
-  - axis-aligned box (AABB);
-  - infinite plane.
-- Материалы:
-  - diffuse/specular;
-  - reflectivity + roughness;
-  - refractivity + IOR + absorption;
-  - Fresnel (Schlick).
-- Освещение:
-  - ambient;
-  - sky contribution;
-  - hard/soft shadows.
-- Постпроцесс:
-  - ACES tonemapping;
-  - gamma;
-  - fog по depth;
-  - edge enhancement (depth/normal discontinuities);
-  - dithering;
-  - адаптивное соответствие luminance → ASCII symbol (через histogram/CDF).
-- Накопление сэмплов между кадрами и reset accumulation при изменении камеры/сцены.
-- UI на `pygame` для live-настроек.
-- Экспорт:
-  - `.pkl` (кадры)
-  - `.mp4` (ASCII-видео через `imageio` + `libx264`).
+## 2. Как запустить
 
----
+### Требования
 
-## 2. Технологический стек и зависимости
-
-### Runtime-библиотеки
-
-- **Python 3.10+** (рекомендуется).
-- **numpy** — математика, буферы, histogram/CDF, массивы сцены.
-- **numba** — JIT и CUDA kernels (`numba.cuda`, `@cuda.jit`, RNG states).
-- **pygame** — окно, input, UI, отрисовка символов и surface.
-- **imageio** — запись видео `.mp4`.
-- **imageio-ffmpeg** (рекомендуется) — backend для `libx264`.
-
-### Стандартная библиотека
-
-`math`, `sys`, `os`, `pickle`, `datetime`.
-
-### Установка зависимостей
+1. Python 3.10+
+2. NVIDIA GPU + драйвер + рабочий CUDA runtime для `numba`
+3. Установленные зависимости:
 
 ```bash
 pip install numpy numba pygame imageio imageio-ffmpeg
 ```
 
-> Если используете conda:
->
-> ```bash
-> conda install numpy numba pygame imageio
-> ```
->
-> и при необходимости отдельно ffmpeg/imageio-ffmpeg.
-
----
-
-## 3. Требования к окружению
-
-Так как рендер — CUDA-ориентированный, нужен:
-
-1. **NVIDIA GPU** с поддержкой CUDA.
-2. Установленный **NVIDIA driver**.
-3. Совместимые версии `numba` + CUDA runtime/driver.
-4. Для видео-экспорта — доступный ffmpeg codec `libx264`.
-
-### Проверка, что CUDA видна Numba
+### Проверка CUDA
 
 ```bash
 python -c "from numba import cuda; print(cuda.is_available())"
 ```
 
-Если `False`, realtime/bake через `render.py` не запустятся корректно.
+Если вывод `False`, GPU-рендер из `engine/render.py` работать не будет.
 
----
+### Запуск приложения
 
-## 4. Быстрый старт
-
-### 4.1 Клонирование и запуск
+Из корня репозитория:
 
 ```bash
-git clone <repo-url>
-cd askii-rtx
-python main.py
+python -m apps.viewer.main
 ```
 
-### 4.2 Что происходит при старте
+По умолчанию используется fullscreen-окно и режим `MODE["type"] = "realtime"`.
 
-- Инициализируется fullscreen окно `pygame`.
-- Строится ранжирование символов по яркости (`build_char_ramp`).
-- Поднимается UI панель справа.
-- Запускается realtime рендер (если `MODE.type = "realtime"`).
+## 3. Режимы работы
 
----
+Режим задаётся в `config/default.py`:
 
-## 5. Режимы работы
+- `realtime` — интерактивный рендер и управление через UI.
+- `bake` — при старте рендерит последовательность кадров, сохраняет `frames.pkl` и `.mp4`, затем переключается в `playback`.
+- `playback` — воспроизводит ранее подготовленные кадры в цикле.
 
-Режим задаётся в `config.py -> MODE["type"]`:
+## 4. Конфигурация
 
-### `"realtime"`
+Главные секции в `config/default.py`:
 
-- Рендер в live-цикле.
-- Камера/свет/флаги меняются из UI.
-- Можно нажать **BAKE** в UI для офлайн просчёта и экспорта.
+- `WINDOW` — FPS и базовые параметры окна.
+- `MODE` — текущий режим, FPS playback, имя файла для pickle.
+- `BAKE` — число кадров, качество bake (samples/bounces), размер шрифта для экспорта.
+- `RENDER` — рендер-параметры (samples/bounces, exposure, gamma, GI strength, набор символов).
+- `FONT` — шрифт для ASCII в realtime.
+- `CAMERA` — радиус/высота/скорость движения.
+- `LIGHT` и `LIGHTING` — направление света и флаги шейдинга (ambient, sky, shadows, reflections, fresnel и т.д.).
+- `SCENE` — декларативные параметры объектов (в текущем состоянии часть сцены также задаётся напрямую в `engine/scene.py`).
 
-### `"bake"`
+## 5. Как устроен рендер-пайплайн
 
-- На старте сразу просчитывает `BAKE.frames` кадров.
-- Сохраняет `frames.pkl` и `renders/render_*.mp4`.
-- После завершения переключается в `"playback"`.
+1. `Engine.render(...)` обновляет сцену (`Scene.update`) и получает её плоское представление (spheres/boxes/plane + device buffers).
+2. `engine.camera.get_camera(...)` вычисляет позицию и базис камеры с ограничением по X и проверкой коллизий.
+3. `engine.render.render_frame_buffer(...)` запускает CUDA-часть:
+   - трассировка пересечений (sphere/box/plane);
+   - bounce-loop с отражением/преломлением;
+   - учёт материалов (`engine/materials.py`);
+   - накопление сэмплов между кадрами;
+   - постобработка (ACES-подобный тонмаппинг, gamma, fog, edge enhancement, dithering).
+4. `ascii_map(...)` превращает luminance в индексы символов.
+5. `draw_buffer(...)` рисует кадр в `pygame.Surface`.
 
-### `"playback"`
+## 6. Bake и экспорт видео
 
-- Проигрывает подготовленные кадры из памяти по кругу.
+- Bake запускается либо при `MODE["type"] == "bake"`, либо кнопкой **BAKE** в UI.
+- `pipeline/baker.py` формирует массив кадров и может сохранять его в `frames.pkl`.
+- `pipeline/video_ascii.py` отрисовывает каждый кадр тем же `draw_buffer(...)` и пишет `renders/render_<timestamp>.mp4` через `imageio` + `libx264`.
 
----
+## 7. UI и управление
 
-## 6. Архитектура проекта
+В правой панели доступны:
+- слайдеры камеры (`radius`, `height`, `speed`);
+- bake-параметры (`frames`, `bounces`, `samples`, `font size`);
+- выбор разрешения рендера (dropdown);
+- чекбоксы lighting-флагов;
+- кнопки **BAKE** и **EXIT**.
 
-```text
-askii-rtx/
-├── main.py                # entrypoint, loop, UI, mode orchestration
-├── config.py              # все runtime/bake/render/camera/light/scenesettings
-├── render.py              # CUDA path tracing kernels + postprocess + ascii mapping
-├── scene.py               # плоское представление сцены (spheres, boxes, plane)
-├── camera.py              # вычисление камеры + коллизии с геометрией
-├── materials.py           # таблица материалов (PBR-like параметры)
-├── lighting.py            # CPU/Numba lighting helpers
-├── baker.py               # офлайн просчёт кадров + сохранение pkl
-├── video_ascii.py         # сборка mp4 из ASCII кадров
-├── char_calibration.py    # сортировка символов по яркости
-├── ui.py                  # Slider / Button / Checkbox / Dropdown
-├── tracer.py              # CPU/Numba tracer (legacy/альтернативный путь)
-└── geometry/
-    ├── sphere.py          # sphere hit
-    ├── box.py             # box hit
-    └── plane.py           # plane hit
-```
-
-### Архитектурные слои
-
-1. **Presentation/UI layer**: `main.py`, `ui.py`.
-2. **Render core (GPU)**: `render.py`.
-3. **Scene/Camera domain**: `scene.py`, `camera.py`, `materials.py`, `lighting.py`.
-4. **Offline pipeline**: `baker.py`, `video_ascii.py`.
-5. **Utilities/legacy**: `char_calibration.py`, `tracer.py`, `geometry/*`.
-
----
-
-## 7. Пайплайн рендера (пошагово)
-
-Основная функция: `render_frame_buffer(W, H, aspect, scene_time, camera_angle, dt, chars)`.
-
-### Шаг 1. Сбор параметров
-
-Из `config.py` читаются:
-- samples/bounces;
-- lighting флаги;
-- exposure/gamma/diffuse_gi_strength.
-
-### Шаг 2. Подготовка камеры/сцены
-
-- `get_camera(camera_angle)` возвращает `ro, forward, right, up`.
-- `get_scene_flat(scene_time)` даёт numpy-массивы spheres/boxes + plane_y.
-
-### Шаг 3. Проверка изменений
-
-- Если изменилась сцена/камера/размер буфера, accumulation reset.
-- Иначе продолжает копить сэмплы по кадрам.
-
-### Шаг 4. CUDA kernel: `render_sample_kernel`
-
-На пиксель:
-- генерируется первичный луч (+ jitter для AA);
-- выполняется bounce-loop (`for bounce in range(bounces)`);
-- на каждом попадании:
-  - intersection (`trace_scene`);
-  - normal;
-  - direct light + shadows;
-  - выбор следующего события (reflection/refraction/diffuse) через вероятностный branching;
-  - обновление throughput;
-  - Russian roulette для поздних bounce.
-
-Записываются:
-- sample RGB,
-- sample depth,
-- sample normal,
-- число реально использованных sub-samples.
-
-### Шаг 5. CUDA kernel: `accumulate_kernel`
-
-Обновляет глобальные accumulation buffers:
-- `accum_rgb += sample_rgb * weight`
-- `sample_count += weight`
-
-### Шаг 6. CUDA kernel: `postprocess_kernel`
-
-- деление на sample_count;
-- exposure + ACES + gamma;
-- saturation tweak;
-- fog по depth;
-- edge detection (depth/normal);
-- dithering;
-- формирование:
-  - `buffer_rgb` (цвет символа),
-  - `luminance_buffer` (для выбора ASCII символа),
-  - `edge_buffer` (для усиления контуров символами).
-
-### Шаг 7. CPU-side ASCII mapping
-
-- histogram/CDF remap luminance;
-- вычисление индекса символа в `chars`;
-- edge-aware корректировка индекса.
-
-Результат: `(idx, buffer_rgb)`.
-
-### Шаг 8. Draw
-
-`draw_buffer(...)` рендерит символы через кэш глифов и цветной `font.render(...)`.
-
----
-
-## 8. Конфигурация (`config.py`)
-
-Ниже все ключевые разделы и влияние на систему.
-
-### 8.1 `WINDOW`
-- `width`, `height` — сейчас практически не используются напрямую (окно fullscreen).
-- `fps` — ограничение цикла UI/рендера.
-
-### 8.2 `MODE`
-- `type`: `"realtime" | "bake"`.
-- `bake_frames` — legacy-поле, фактическая длина bake берётся из `BAKE["frames"]`.
-- `playback_fps` — fps итогового mp4.
-- `save_file` — путь к pickle (`frames.pkl`).
-
-### 8.3 `BAKE`
-- `frames` — количество кадров в офлайн рендере.
-- `bounces` — bounce depth при bake (подменяет realtime `RENDER.bounces` на время bake).
-- `samples` — samples per pixel для bake.
-- `font_size` — параметр присутствует в UI/конфиге, но в текущем коде не подключён к реальной смене размера шрифта в runtime.
-
-### 8.4 `RENDER`
-- `chars` — исходная строка символов ASCII ramp.
-- `bounces`, `samples` — realtime качество.
-- `exposure`, `gamma` — тон/яркость.
-- `diffuse_gi_strength` — вклад диффузного глобального освещения.
-
-### 8.5 `FONT`
-- `name`, `size` — шрифт ASCII-глифов.
-
-### 8.6 `CAMERA`
-- `mode` — есть в конфиге (`orbit|wave`), но в текущей реализации `camera.py` не использует этот флаг напрямую.
-- `radius`, `height`, `speed` — активно применяются.
-- `wave_*` — на будущее/legacy.
-
-### 8.7 `LIGHT`
-- `direction` — направление источника.
-- `intensity` — в текущем рендер-пути не используется напрямую в `render.py` (свет нормализуется в `get_light()`).
-
-### 8.8 `LIGHTING`
-Тумблеры в UI:
-- `ambient`
-- `sky`
-- `soft_shadows`
-- `hard_shadows`
-- `reflections`
-- `refraction` (есть в конфиге, без отдельного чекбокса в текущем UI)
-- `fresnel`
-
-### 8.9 `SCENE`
-Есть детальная декларативная структура для sphere/box/plane анимации.
-
-**Важно:** в текущем runtime `scene.py` возвращает фиксированные `spheres/boxes/plane_y` и не читает `SCENE`. Это задел под будущую параметрическую сцену.
-
----
-
-## 9. UI и управление
-
-UI размещается справа (`UI_WIDTH = 320`) и содержит:
-
-### Слайдеры
-- `cam radius`
-- `cam height`
-- `cam speed`
-- `frames` (bake)
-- `bounces` (bake)
-- `samples` (bake)
-- `font size` (на данный момент без runtime-эффекта)
-
-### Dropdown
-- `render resolution` из списка preset:
-  - 640×360
-  - 800×450
-  - 1280×720
-  - 1920×1080
-  - 2560×1440
-
-### Чекбоксы
-- Ambient, Sky, Soft Shadows, Hard Shadows, Reflections, Fresnel.
-
-### Кнопки
-- **BAKE** — запускает offline-проход и экспорт.
-- **EXIT** — выход из приложения.
-
-### Горячие клавиши
-- `Esc` — выход.
+Горячие клавиши:
+- `Esc` — выход;
 - `F11` — toggle fullscreen.
 
----
+## 8. Ограничения и замечания
 
-## 10. Сцена и материалы
-
-## 10.1 Геометрия
-
-`scene.py` сейчас задаёт:
-- 5 сфер;
-- 4 бокса (включая стенки/объекты);
-- плоскость `plane_y = 0.0`.
-
-## 10.2 Камера
-
-`camera.py`:
-- вычисляет bounds сцены;
-- двигает камеру по оси X в зависимости от угла;
-- держит `z` позади центра сцены;
-- выполняет collision check с sphere/AABB и корректирует `x` при пересечениях;
-- возвращает ортонормальный базис `forward/right/up`.
-
-## 10.3 Материалы
-
-`materials.py` хранит таблицу, где на материал:
-
-`[diffuse, specular, shininess, reflectivity, roughness, refractivity, ior, absorption, r, g, b]`
-
-В текущем наборе есть типы:
-- matte;
-- glossy plastic;
-- mixed;
-- glass;
-- mirror.
-
----
-
-## 11. Bake и экспорт видео
-
-### 11.1 Bake (`baker.py`)
-
-- Длительность цикла: `duration = 1 / CAMERA.speed`.
-- Для каждого кадра:
-  - вычисляется `scene_time`;
-  - вычисляется `camera_angle`;
-  - рендерится ASCII-буфер;
-  - сохраняется в список.
-
-### 11.2 Сохранение кадров
-
-`save_frames(frames)` сериализует кадры в `MODE.save_file` (`pickle`).
-
-### 11.3 Экспорт MP4 (`video_ascii.py`)
-
-- Создаётся `renders/`.
-- Имя файла: `render_YYYY-mm-dd_HH-MM-SS.mp4`.
-- Кадры рисуются через тот же `draw_buffer`, затем пишутся в `imageio` writer (`libx264`, `yuv420p`).
-
----
-
-## 12. Производительность и качество
-
-Ключевые регуляторы качества/скорости:
-
-1. `RENDER.samples` / `BAKE.samples` — больше сэмплов = меньше шум, медленнее.
-2. `RENDER.bounces` / `BAKE.bounces` — глубина путей, влияет на реализм и стоимость.
-3. Разрешение рендера (dropdown) — квадратично влияет на нагрузку.
-4. Флаги `soft_shadows`, `refraction`, `fresnel` — усложняют шейдинг.
-5. `diffuse_gi_strength` — влияет на "заполнение" освещения.
-
-Практический совет:
-- realtime: держать `samples=1..2`, `bounces=1..2`;
-- bake: повышать `samples` и `bounces` постепенно, тестируя на короткой анимации.
-
----
-
-## 13. Ограничения и известные нюансы
-
-1. Проект ориентирован на CUDA GPU; CPU fallback для основного потока рендера не подключён.
-2. `tracer.py` и `geometry/*` содержат CPU/Numba-трассировщик, но main-цикл использует `render.py` (CUDA).
-3. Некоторые поля `config.py` пока не участвуют в runtime логике (`SCENE`, часть camera/light параметров).
-4. Поле `BAKE.font_size` сейчас не меняет фактический `pygame.font` во время работы.
-5. UI-рендер и символный draw идут на CPU (`pygame`), что может стать bottleneck на высоких разрешениях.
-
----
-
-## 14. Отладка и troubleshooting
-
-### Проблема: `cuda.is_available() == False`
-
-Проверьте:
-- NVIDIA driver установлен и видит GPU (`nvidia-smi`);
-- версии `numba` и CUDA runtime совместимы;
-- запуск происходит в среде с доступом к GPU.
-
-### Проблема: не сохраняется MP4 / ошибки codec
-
-Проверьте:
-- установлен ffmpeg;
-- доступен `libx264`;
-- установлен `imageio-ffmpeg`.
-
-### Проблема: низкий FPS
-
-Уменьшите:
-- разрешение рендера;
-- `samples`;
-- `bounces`;
-- отключите `soft_shadows` и/или `refraction`.
+- Проект CUDA-зависим: на машинах без совместимой NVIDIA/CUDA рендер не стартует.
+- В репозитории есть legacy-модуль `tracer.py`, но основной путь сейчас — через `engine/*`.
+- В каталоге есть `__pycache__` артефакты; для чистых коммитов их обычно не хранят.
+- Конфиг и реализация сцены частично дублируют друг друга: `SCENE` в конфиге не полностью определяет финальную геометрию, так как `engine/scene.py` содержит жёстко заданные массивы примитивов.
