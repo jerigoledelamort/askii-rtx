@@ -456,11 +456,122 @@ def render_sample_kernel(
     out_b = 0.0
     depth = 0.0
 
-    for _ in range(samples):
+    # --- pre-sample (один луч) ---
+    jx = xoroshiro128p_uniform_float32(rng_states, thread_id)
+    jy = xoroshiro128p_uniform_float32(rng_states, thread_id)
+
+    nxs = ((x * 8 + 4 + jx * 8) / (W * 8)) * 2.0 - 1.0
+    nys = 1.0 - ((y * 8 + 4 + jy * 8) / (H * 8)) * 2.0
+    nxs *= aspect
+
+    rd_x = forward[0] + right[0] * nxs + up[0] * nys
+    rd_y = forward[1] + right[1] * nxs + up[1] * nys
+    rd_z = forward[2] + right[2] * nxs + up[2] * nys
+
+    rl = math.sqrt(rd_x * rd_x + rd_y * rd_y + rd_z * rd_z)
+    if rl > EPS:
+        inv = 1.0 / rl
+        rd_x *= inv
+        rd_y *= inv
+        rd_z *= inv
+
+    ro_x = ro[0]
+    ro_y = ro[1]
+    ro_z = ro[2]
+
+    t, mat_id, hit_type, hit_index, u, v = trace_scene(
+        ro_x, ro_y, ro_z,
+        rd_x, rd_y, rd_z,
+        spheres, boxes, triangles, plane_h
+    )
+
+    if t > 0.0:
+        hit_x = ro_x + rd_x * t
+        hit_y = ro_y + rd_y * t
+        hit_z = ro_z + rd_z * t
+
+        nx, ny, nz = get_normal(
+            hit_x, hit_y, hit_z,
+            hit_type, hit_index,
+            spheres, boxes, triangles,
+            u, v
+        )
+
+        lambert1 = nx * lx + ny * ly + nz * lz
+        if lambert1 < 0.0:
+            lambert1 = 0.0
+    else:
+        lambert1 = 0.0
+
+    first_hit = t > 0.0
+
+    if first_hit:
+        if lambert1 < 0.02 or lambert1 > 0.98:
+            lambert2 = lambert1
+        else:
+    # --- второй луч ---
+            jx2 = xoroshiro128p_uniform_float32(rng_states, thread_id)
+            jy2 = xoroshiro128p_uniform_float32(rng_states, thread_id)
+
+            nxs2 = ((x + jx2) / W) * 2.0 - 1.0
+            nys2 = 1.0 - ((y + jy2) / H) * 2.0
+            nxs2 *= aspect
+
+            rd2_x = forward[0] + right[0] * nxs2 + up[0] * nys2
+            rd2_y = forward[1] + right[1] * nxs2 + up[1] * nys2
+            rd2_z = forward[2] + right[2] * nxs2 + up[2] * nys2
+
+            rl2 = math.sqrt(rd2_x * rd2_x + rd2_y * rd2_y + rd2_z * rd2_z)
+            if rl2 > EPS:
+                inv = 1.0 / rl2
+                rd2_x *= inv
+                rd2_y *= inv
+                rd2_z *= inv
+
+            t2, mat2, hit_type2, hit_index2, u2, v2 = trace_scene(
+                ro_x, ro_y, ro_z,
+                rd2_x, rd2_y, rd2_z,
+                spheres, boxes, triangles, plane_h
+            )
+
+            if t2 > 0.0:
+                hit_x2 = ro_x + rd2_x * t2
+                hit_y2 = ro_y + rd2_y * t2
+                hit_z2 = ro_z + rd2_z * t2
+
+                nx2, ny2, nz2 = get_normal(
+                    hit_x2, hit_y2, hit_z2,
+                    hit_type2, hit_index2,
+                    spheres, boxes, triangles,
+                    u2, v2
+                )
+
+                lambert2 = nx2 * lx + ny2 * ly + nz2 * lz
+                if lambert2 < 0.0:
+                    lambert2 = 0.0
+            else:
+                lambert2 = 0.0
+
+    lum1 = lambert1
+    lum2 = lambert2
+
+    variance = abs(lum1 - lum2)
+
+    local_samples = samples
+
+    if variance < 0.02:
+        local_samples = 1
+    elif variance < 0.1:
+        local_samples = samples // 2
+
+    for _ in range(local_samples):
 
         # --- generate ray ---
-        nxs = ((x + xoroshiro128p_uniform_float32(rng_states, thread_id)) / W) * 2.0 - 1.0
-        nys = 1.0 - ((y + xoroshiro128p_uniform_float32(rng_states, thread_id)) / H) * 2.0
+        jx = xoroshiro128p_uniform_float32(rng_states, thread_id)
+        jy = xoroshiro128p_uniform_float32(rng_states, thread_id)
+
+        nxs = ((x * 8 + 4 + jx * 8) / (W * 8)) * 2.0 - 1.0
+        nys = 1.0 - ((y * 8 + 4 + jy * 8) / (H * 8)) * 2.0
         nxs *= aspect
 
         rd_x = forward[0] + right[0] * nxs + up[0] * nys
@@ -523,7 +634,7 @@ def render_sample_kernel(
             out_b += base_b * lighting
             depth += t
 
-    inv = 1.0 / samples
+    inv = 1.0 / local_samples
 
     sample_rgb[y, x, 0] = out_r * inv
     sample_rgb[y, x, 1] = out_g * inv
@@ -621,13 +732,7 @@ def postprocess_kernel(
             dd = abs(depth - d2) * 0.6
             if dd > edge:
                 edge = dd
-        nx0 = normal_buffer[y, x, 0]
-        ny0 = normal_buffer[y, x, 1]
-        nz0 = normal_buffer[y, x, 2]
-        nx1 = normal_buffer[y, x + 1, 0]
-        ny1 = normal_buffer[y, x + 1, 1]
-        nz1 = normal_buffer[y, x + 1, 2]
-        nd = 1.0 - (nx0 * nx1 + ny0 * ny1 + nz0 * nz1)
+        nd = 0.0
         if nd > edge:
             edge = nd
 
@@ -637,13 +742,7 @@ def postprocess_kernel(
             dd = abs(depth - d2) * 0.6
             if dd > edge:
                 edge = dd
-        nx0 = normal_buffer[y, x, 0]
-        ny0 = normal_buffer[y, x, 1]
-        nz0 = normal_buffer[y, x, 2]
-        nx1 = normal_buffer[y + 1, x, 0]
-        ny1 = normal_buffer[y + 1, x, 1]
-        nz1 = normal_buffer[y + 1, x, 2]
-        nd = 1.0 - (nx0 * nx1 + ny0 * ny1 + nz0 * nz1)
+        nd = 0.0
         if nd > edge:
             edge = nd
 
@@ -730,6 +829,8 @@ def render_frame_buffer(
     chars,
     state: RendererState
 ):
+    W_chars = W
+    H_chars = H
 
     # ---- unpack scene ----
     spheres = scene_data["spheres"]
@@ -783,14 +884,14 @@ def render_frame_buffer(
         _reset_accumulation(state, W, H)
 
     # ---- buffers ----
-    sample_rgb = np.zeros((H, W, 3), dtype=np.float32)
-    sample_depth = np.zeros((H, W), dtype=np.float32)
-    sample_normal = np.zeros((H, W, 3), dtype=np.float32)
-    sample_used = np.zeros((H, W), dtype=np.float32)
+    sample_rgb = np.zeros((H_chars, W_chars, 3), dtype=np.float32)
+    sample_depth = np.zeros((H_chars, W_chars), dtype=np.float32)
+    sample_normal = np.zeros((H_chars, W_chars, 3), dtype=np.float32)
+    sample_used = np.zeros((H_chars, W_chars), dtype=np.float32)
 
-    luminance_buffer = np.zeros((H, W), dtype=np.float32)
-    edge_buffer = np.zeros((H, W), dtype=np.float32)
-    buffer_rgb = np.zeros((H, W, 3), dtype=np.float32)
+    luminance_buffer = np.zeros((H_chars, W_chars), dtype=np.float32)
+    edge_buffer = np.zeros((H_chars, W_chars), dtype=np.float32)
+    buffer_rgb = np.zeros((H_chars, W_chars, 3), dtype=np.float32)
 
     d_sample_rgb = cuda.to_device(sample_rgb)
     d_sample_depth = cuda.to_device(sample_depth)
@@ -806,7 +907,7 @@ def render_frame_buffer(
     d_up = cuda.to_device(up.astype(np.float32))
 
     # ---- RNG ----
-    total_threads = W * H
+    total_threads = W_chars * H_chars
     if state.rng_states is None or state.rng_size != total_threads:
         seed = np.random.randint(1, 1_000_000)
         state.rng_states = create_xoroshiro128p_states(total_threads, seed=seed)
@@ -816,15 +917,15 @@ def render_frame_buffer(
 
     # ---- launch ----
     threads = (16, 16)
-    blocks = ((W + 15) // 16, (H + 15) // 16)
+    blocks = ((W_chars + 15) // 16, (H_chars + 15) // 16)
 
     render_sample_kernel[blocks, threads](
         d_sample_rgb,
         d_sample_depth,
         d_sample_normal,
         d_sample_used,
-        W,
-        H,
+        W_chars,
+        H_chars,
         np.float32(aspect),
         samples,
         bounces,
@@ -868,8 +969,8 @@ def render_frame_buffer(
         state.sample_count,
         d_sample_depth,
         d_sample_normal,
-        W,
-        H,
+        W_chars,
+        H_chars,
         exposure,
         gamma,
         FOG_DENSITY,

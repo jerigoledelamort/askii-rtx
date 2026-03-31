@@ -10,10 +10,35 @@ from pipeline.video_ascii import save_video_ascii
 from utils.char_calibration import build_char_ramp
 from apps.viewer.ui import Slider, Button, Dropdown, Checkbox
 
+
+def compute_char_pixel_size(width, height, target_chars):
+    return math.sqrt((width * height) / target_chars)
+
+
+def find_font_for_target(width, height, font_name, target_chars):
+    target_char_px = compute_char_pixel_size(width, height, target_chars)
+
+    best_font = None
+    best_char_w = None
+    best_char_h = None
+
+    for size in range(4, 20):
+        font = pygame.font.SysFont(font_name, size)
+        cw, ch = font.size("A")
+
+        if cw >= target_char_px:
+            best_font = font
+            best_char_w = cw
+            best_char_h = ch
+            break
+
+    return best_font, best_char_w, best_char_h
+
+
 FPS = config.WINDOW["fps"]
 
 RESOLUTIONS = [(640, 360), (800, 450), (1280, 720), (1920, 1080), (2560, 1440)]
-INITIAL_RESOLUTION_INDEX = 2
+INITIAL_RESOLUTION_INDEX = 4
 UI_WIDTH = 320
 UI_FONT_SIZE = 16
 UI_PADDING_TOP = 20
@@ -30,31 +55,30 @@ UI_HEIGHT = DISPLAY_HEIGHT
 
 clock = pygame.time.Clock()
 
-font = pygame.font.SysFont(
-    config.FONT["name"],
-    config.FONT["size"]
-)
+resolution_index = INITIAL_RESOLUTION_INDEX
+target_w, target_h = RESOLUTIONS[resolution_index]
 
+global engine
+engine = Engine(config)
+
+global font, char_w, char_h, chars, char_cache
+
+font, char_w, char_h = find_font_for_target(target_w, target_h, config.FONT["name"], config.PERFORMANCE["target_chars"])
 chars = build_char_ramp(config.RENDER["chars"], font)
-char_w, char_h = font.size("A")
-
-char_cache = {
-    "__font__": font,
-    **{c: font.render(c, False, (255, 255, 255)) for c in chars},
-}
+char_cache = {"__font__": font, **{c: font.render(c, False, (255, 255, 255)) for c in chars},}
 
 mode = config.MODE["type"]
-engine = Engine(config)
 
 frames = None
 frame_index = 0
 
 ui_font = pygame.font.SysFont("consolas", UI_FONT_SIZE)
 
-resolution_index = INITIAL_RESOLUTION_INDEX
-RENDER_WIDTH, RENDER_HEIGHT = RESOLUTIONS[resolution_index]
-W = RENDER_WIDTH // char_w
-H = RENDER_HEIGHT // char_h
+W = target_w // char_w
+H = target_h // char_h
+
+RENDER_WIDTH = W * char_w
+RENDER_HEIGHT = H * char_h
 aspect = (W * char_w) / (H * char_h)
 
 scroll_offset = 0
@@ -141,9 +165,31 @@ def apply_resolution(index):
     global sliders, resolution_dropdown, bake_button, exit_button, checkboxes, scroll_offset
 
     resolution_index = index
-    RENDER_WIDTH, RENDER_HEIGHT = RESOLUTIONS[resolution_index]
-    W = RENDER_WIDTH // char_w
-    H = RENDER_HEIGHT // char_h
+
+    target_w, target_h = RESOLUTIONS[resolution_index]
+
+    global font, char_w, char_h, chars, char_cache
+
+    font, char_w, char_h = find_font_for_target(
+        target_w,
+        target_h,
+        config.FONT["name"],
+        config.PERFORMANCE["target_chars"]
+    )
+
+    chars = build_char_ramp(config.RENDER["chars"], font)
+
+    char_cache = {
+        "__font__": font,
+        **{c: font.render(c, False, (255, 255, 255)) for c in chars},
+    }
+
+    W = target_w // char_w
+    H = target_h // char_h
+
+    RENDER_WIDTH = W * char_w
+    RENDER_HEIGHT = H * char_h
+
     aspect = (W * char_w) / (H * char_h)
 
     render_surface = pygame.Surface((RENDER_WIDTH, RENDER_HEIGHT))
@@ -261,7 +307,8 @@ while running:
 
     if mode == "realtime":
         buffer_idx, buffer_rgb = engine.render(
-            camera_angle, dt, chars, W, H, aspect
+            camera_angle, dt, chars, W, H, aspect,
+            char_w, char_h
         )
         draw_buffer(render_surface, buffer_idx, chars, char_cache, char_w, char_h, buffer_rgb)
 

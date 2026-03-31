@@ -3,6 +3,7 @@ from engine.render import render_frame_buffer, reset_accumulation_buffers
 from engine.render import RendererState
 from engine.scene import Scene
 from engine.render import ascii_map
+import numpy as np
 
 
 class Engine:
@@ -16,7 +17,7 @@ class Engine:
 
         self.state = RendererState()
 
-    def render(self, camera_angle, dt, chars, W, H, aspect):
+    def render(self, camera_angle, dt, chars, W, H, aspect, char_w, char_h):
         # 1. сцена
         self.scene.update(dt)
         scene_data = self.scene.get_data()
@@ -36,6 +37,7 @@ class Engine:
         }
 
         # 3. рендер
+        # --- GPU ---
         luminance, edge, rgb = render_frame_buffer(
             W, H, aspect,
             scene_data,
@@ -47,7 +49,6 @@ class Engine:
             self.state
         )
 
-        # 4. ASCII (теперь это отдельный шаг)
         buffer_idx = ascii_map(luminance, edge, chars)
 
         return buffer_idx, rgb

@@ -4,8 +4,8 @@
 
 # -------- WINDOW --------
 WINDOW = {
-    "width": 1080,
-    "height": 720,
+    "width": 2560,
+    "height": 1440,
     "fps": 50
 }
 
@@ -23,9 +23,9 @@ BAKE = {
 
 # -------- RENDER --------
 RENDER = {
-    "chars": " .'`^\",:;Il!i~+_-?][}{1)(|\\/tfjrxnuvczXYUJCLQ0OZmwqpdbkhao*#MW&8%B@$",
+    "chars": " .,:-~=+*#%@",
     "bounces": 8,
-    "samples": 1,
+    "samples": 8,
     "exposure": 1.0,
     "gamma": 1.0,
     "diffuse_gi_strength": 0.4,
@@ -35,6 +35,10 @@ RENDER = {
 FONT = {
     "name": "Consolas",
     "size": 8
+}
+
+PERFORMANCE = {
+    "target_chars": 32000
 }
 
 # -------- CAMERA --------
