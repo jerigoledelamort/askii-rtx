@@ -72,9 +72,8 @@ def create_ui_controls(ui_width, selected_resolution):
         Slider(PANEL_PADDING, y + UI_SPACING * 1, slider_width, -5, 5, config.CAMERA["height"], "cam height"),
         Slider(PANEL_PADDING, y + UI_SPACING * 2, slider_width, 0.05, 1.0, config.CAMERA["speed"], "cam speed"),
         Slider(PANEL_PADDING, y + UI_SPACING * 3, slider_width, 30, 600, config.BAKE["frames"], "frames", True),
-        Slider(PANEL_PADDING, y + UI_SPACING * 4, slider_width, 1, 10, config.BAKE["bounces"], "bounces", True),
-        Slider(PANEL_PADDING, y + UI_SPACING * 5, slider_width, 1, 8, config.BAKE["samples"], "samples", True),
-        Slider(PANEL_PADDING, y + UI_SPACING * 6, slider_width, 6, 24, config.BAKE["font_size"], "font size", True),
+        Slider(PANEL_PADDING, y + UI_SPACING * 4, slider_width, 1, 16, config.RENDER["bounces"], "bounces", True),
+        Slider(PANEL_PADDING, y + UI_SPACING * 5, slider_width, 1, 8, config.RENDER["samples"], "samples", True),
     ]
 
     resolution_options = [f"{i}: {w}x{h}" for i, (w, h) in enumerate(RESOLUTIONS)]
@@ -99,6 +98,7 @@ def create_ui_controls(ui_width, selected_resolution):
         Checkbox(PANEL_PADDING, checkbox_start_y + UI_SPACING * 3, 20, "Hard Shadows", int(config.LIGHTING["hard_shadows"]), key="hard_shadows"),
         Checkbox(PANEL_PADDING, checkbox_start_y + UI_SPACING * 4, 20, "Reflections", int(config.LIGHTING["reflections"]), key="reflections"),
         Checkbox(PANEL_PADDING, checkbox_start_y + UI_SPACING * 5, 20, "Fresnel", int(config.LIGHTING["fresnel"]), key="fresnel"),
+        Checkbox(PANEL_PADDING, checkbox_start_y + UI_SPACING * 6, 20, "Refraction", int(config.LIGHTING["refraction"]), key="refraction"),
     ]
 
     return sliders_local, dropdown, bake_button, exit_button, checkboxes_local
@@ -245,10 +245,9 @@ while running:
     config.CAMERA["radius"] = sliders[0].value
     config.CAMERA["height"] = sliders[1].value
     config.CAMERA["speed"] = sliders[2].value
-    config.BAKE["frames"] = int(sliders[3].value)
-    config.BAKE["bounces"] = int(sliders[4].value)
+    config.RENDER["frames"] = int(sliders[3].value)
+    config.RENDER["bounces"] = int(sliders[4].value)
     config.BAKE["samples"] = int(sliders[5].value)
-    config.BAKE["font_size"] = int(sliders[6].value)
     for c in checkboxes:
         config.LIGHTING[c.key] = int(c.value)
 
@@ -302,12 +301,6 @@ while running:
         bake_button.clicked = False
 
         print("START BAKE")
-
-        old_samples = config.RENDER["samples"]
-        old_bounces = config.RENDER["bounces"]
-
-        config.RENDER["samples"] = config.BAKE["samples"]
-        config.RENDER["bounces"] = config.BAKE["bounces"]
 
         frames = bake_frames(engine, W, H, aspect, chars)
         save_frames(frames)

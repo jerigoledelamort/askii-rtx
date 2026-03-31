@@ -19,15 +19,12 @@ MODE = {
 
 BAKE = {
     "frames": 120,        # длина анимации
-    "bounces": 1,         # отражения
-    "samples": 1,         # антиалиасинг
-    "font_size": 12       # финальный размер
 }
 
 # -------- RENDER --------
 RENDER = {
     "chars": " .'`^\",:;Il!i~+_-?][}{1)(|\\/tfjrxnuvczXYUJCLQ0OZmwqpdbkhao*#MW&8%B@$",
-    "bounces": 1,
+    "bounces": 8,
     "samples": 1,
     "exposure": 1.0,
     "gamma": 1.0,
@@ -55,7 +52,7 @@ CAMERA = {
 
 # -------- LIGHT --------
 LIGHT = {
-    "direction": (0.2, 1.0, 0.3),
+    "direction": (0.0, 1.0, 0.0),
     "intensity": 1.0
 }
 

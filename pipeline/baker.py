@@ -17,7 +17,6 @@ def bake_frames(engine, W, H, aspect, chars):
         dt = 1/60
 
         buffer_idx, buffer_rgb = engine.render(
-            scene_time,
             camera_angle,
             dt,
             chars,

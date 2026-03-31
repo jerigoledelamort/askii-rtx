@@ -92,59 +92,6 @@ def luminance_of(r, g, b):
 
 
 @cuda.jit(device=True)
-def reflect_components(dx, dy, dz, nx, ny, nz):
-    dot = dx * nx + dy * ny + dz * nz
-    return (
-        dx - 2.0 * dot * nx,
-        dy - 2.0 * dot * ny,
-        dz - 2.0 * dot * nz,
-    )
-
-
-@cuda.jit(device=True)
-def refract_components(dx, dy, dz, nx, ny, nz, ior):
-    cosi = dx * nx + dy * ny + dz * nz
-    etai = 1.0
-    etat = ior
-    nnx = nx
-    nny = ny
-    nnz = nz
-
-    if cosi < 0.0:
-        cosi = -cosi
-    else:
-        tmp = etai
-        etai = etat
-        etat = tmp
-        nnx = -nx
-        nny = -ny
-        nnz = -nz
-
-    eta = etai / etat
-    k = 1.0 - eta * eta * (1.0 - cosi * cosi)
-    if k < 0.0:
-        return 0.0, 0.0, 0.0, 0
-
-    rx = eta * dx + (eta * cosi - math.sqrt(k)) * nnx
-    ry = eta * dy + (eta * cosi - math.sqrt(k)) * nny
-    rz = eta * dz + (eta * cosi - math.sqrt(k)) * nnz
-
-    rl = math.sqrt(rx * rx + ry * ry + rz * rz)
-    if rl > EPS:
-        inv = 1.0 / rl
-        rx *= inv
-        ry *= inv
-        rz *= inv
-    return rx, ry, rz, 1
-
-
-@cuda.jit(device=True)
-def schlick(f0, cos_theta):
-    c = 1.0 - cos_theta
-    return f0 + (1.0 - f0) * c * c * c * c * c
-
-
-@cuda.jit(device=True)
 def random_unit_vector(rng_states, thread_id):
     x = xoroshiro128p_uniform_float32(rng_states, thread_id) * 2.0 - 1.0
     y = xoroshiro128p_uniform_float32(rng_states, thread_id) * 2.0 - 1.0
@@ -155,25 +102,6 @@ def random_unit_vector(rng_states, thread_id):
         return 0.0, 1.0, 0.0
     inv = 1.0 / math.sqrt(ll)
     return x * inv, y * inv, z * inv
-
-
-@cuda.jit(device=True)
-def perturb_direction(dir_x, dir_y, dir_z, roughness, rng_states, thread_id):
-    if roughness <= 0.0:
-        return dir_x, dir_y, dir_z
-
-    jx, jy, jz = random_unit_vector(rng_states, thread_id)
-    out_x = dir_x + jx * roughness
-    out_y = dir_y + jy * roughness
-    out_z = dir_z + jz * roughness
-
-    ll = out_x * out_x + out_y * out_y + out_z * out_z
-    if ll > EPS:
-        inv = 1.0 / math.sqrt(ll)
-        out_x *= inv
-        out_y *= inv
-        out_z *= inv
-    return out_x, out_y, out_z
 
 
 @cuda.jit(device=True)
@@ -258,8 +186,60 @@ def hit_box(ro_x, ro_y, ro_z, rd_x, rd_y, rd_z, cx, cy, cz, sx, sy, sz):
 
 
 @cuda.jit(device=True)
-def trace_scene(ro_x, ro_y, ro_z, rd_x, rd_y, rd_z, spheres, boxes, plane_h):
+def hit_triangle(
+    ro_x, ro_y, ro_z,
+    rd_x, rd_y, rd_z,
+    v0x, v0y, v0z,
+    v1x, v1y, v1z,
+    v2x, v2y, v2z
+):
+    e1x = v1x - v0x
+    e1y = v1y - v0y
+    e1z = v1z - v0z
+
+    e2x = v2x - v0x
+    e2y = v2y - v0y
+    e2z = v2z - v0z
+
+    px = rd_y * e2z - rd_z * e2y
+    py = rd_z * e2x - rd_x * e2z
+    pz = rd_x * e2y - rd_y * e2x
+
+    det = e1x * px + e1y * py + e1z * pz
+
+    if abs(det) < EPS:
+        return -1.0, 0.0, 0.0
+
+    inv_det = 1.0 / det
+
+    tx = ro_x - v0x
+    ty = ro_y - v0y
+    tz = ro_z - v0z
+
+    u = (tx * px + ty * py + tz * pz) * inv_det
+    if u < 0.0 or u > 1.0:
+        return -1.0, 0.0, 0.0
+
+    qx = ty * e1z - tz * e1y
+    qy = tz * e1x - tx * e1z
+    qz = tx * e1y - ty * e1x
+
+    v = (rd_x * qx + rd_y * qy + rd_z * qz) * inv_det
+    if v < 0.0 or (u + v) > 1.0:
+        return -1.0, 0.0, 0.0
+
+    t = (e2x * qx + e2y * qy + e2z * qz) * inv_det
+
+    if t > 0.0:
+        return t, u, v
+    return -1.0, 0.0, 0.0
+
+
+@cuda.jit(device=True)
+def trace_scene(ro_x, ro_y, ro_z, rd_x, rd_y, rd_z, spheres, boxes, triangles, plane_h):
     t_min = -1.0
+    hit_u = 0.0
+    hit_v = 0.0
     mat = -1
     hit_type = -1
     hit_index = -1
@@ -279,6 +259,23 @@ def trace_scene(ro_x, ro_y, ro_z, rd_x, rd_y, rd_z, spheres, boxes, plane_h):
             mat = int(boxes[i, 6])
             hit_type = 2
             hit_index = i
+    
+    for i in range(triangles.shape[0]):
+        t, u, v = hit_triangle(
+            ro_x, ro_y, ro_z,
+            rd_x, rd_y, rd_z,
+            triangles[i, 0], triangles[i, 1], triangles[i, 2],
+            triangles[i, 3], triangles[i, 4], triangles[i, 5],
+            triangles[i, 6], triangles[i, 7], triangles[i, 8],
+        )
+
+        if t > 0.0 and (t_min < 0.0 or t < t_min):
+            hit_u = u
+            hit_v = v
+            t_min = t
+            mat = int(triangles[i, 18])
+            hit_type = 3
+            hit_index = i
 
     if abs(rd_y) >= EPS:
         t = (plane_h - ro_y) / rd_y
@@ -288,11 +285,11 @@ def trace_scene(ro_x, ro_y, ro_z, rd_x, rd_y, rd_z, spheres, boxes, plane_h):
             hit_type = 0
             hit_index = -1
 
-    return t_min, mat, hit_type, hit_index
+    return t_min, mat, hit_type, hit_index, hit_u, hit_v
 
 
 @cuda.jit(device=True)
-def get_normal(hit_x, hit_y, hit_z, hit_type, hit_index, spheres, boxes):
+def get_normal(hit_x, hit_y, hit_z, hit_type, hit_index, spheres, boxes, triangles, u, v):
     if hit_type == 0:
         return 0.0, 1.0, 0.0
 
@@ -300,6 +297,26 @@ def get_normal(hit_x, hit_y, hit_z, hit_type, hit_index, spheres, boxes):
         nx = hit_x - spheres[hit_index, 0]
         ny = hit_y - spheres[hit_index, 1]
         nz = hit_z - spheres[hit_index, 2]
+    
+    elif hit_type == 3:
+        n0x = triangles[hit_index, 9]
+        n0y = triangles[hit_index, 10]
+        n0z = triangles[hit_index, 11]
+
+        n1x = triangles[hit_index, 12]
+        n1y = triangles[hit_index, 13]
+        n1z = triangles[hit_index, 14]
+
+        n2x = triangles[hit_index, 15]
+        n2y = triangles[hit_index, 16]
+        n2z = triangles[hit_index, 17]
+
+        w = 1.0 - u - v
+
+        nx = n0x * w + n1x * u + n2x * v
+        ny = n0y * w + n1y * u + n2y * v
+        nz = n0z * w + n1z * u + n2z * v
+
     else:
         dx = hit_x - boxes[hit_index, 0]
         dy = hit_y - boxes[hit_index, 1]
@@ -351,57 +368,35 @@ def local_lighting(rd_x, rd_y, rd_z, nx, ny, nz, lx, ly, lz, mat_id, lambert, sh
 
 
 @cuda.jit(device=True)
-def compute_shadow(hit_x, hit_y, hit_z, nx, ny, nz, lx, ly, lz, soft_shadow_on, hard_shadow_on, spheres, boxes, plane_h, rng_states, thread_id):
-    shadow_ro_x = hit_x + nx * HIT_BIAS
-    shadow_ro_y = hit_y + ny * HIT_BIAS
-    shadow_ro_z = hit_z + nz * HIT_BIAS
+def simple_shadow(hit_x, hit_y, hit_z,
+                  nx, ny, nz,
+                  lx, ly, lz,
+                  spheres, boxes, triangles, plane_h):
 
-    if soft_shadow_on == 1:
-        visible = 0.0
-        samples = 4
-        for _ in range(samples):
-            jitter_x = lx + (xoroshiro128p_uniform_float32(rng_states, thread_id) - 0.5) * 0.1
-            jitter_y = ly + (xoroshiro128p_uniform_float32(rng_states, thread_id) - 0.5) * 0.1
-            jitter_z = lz + (xoroshiro128p_uniform_float32(rng_states, thread_id) - 0.5) * 0.1
-            jl = math.sqrt(jitter_x * jitter_x + jitter_y * jitter_y + jitter_z * jitter_z)
-            if jl > EPS:
-                inv = 1.0 / jl
-                jitter_x *= inv
-                jitter_y *= inv
-                jitter_z *= inv
-            t_shadow, _, _, _ = trace_scene(shadow_ro_x, shadow_ro_y, shadow_ro_z, jitter_x, jitter_y, jitter_z, spheres, boxes, plane_h)
-            if t_shadow < 0.0:
-                visible += 1.0
-        return visible / samples
+    rd_x = lx
+    rd_y = ly
+    rd_z = lz
 
-    if hard_shadow_on == 1:
-        t_shadow, _, _, _ = trace_scene(shadow_ro_x, shadow_ro_y, shadow_ro_z, lx, ly, lz, spheres, boxes, plane_h)
-        return 0.0 if t_shadow > 0.0 else 1.0
+    dot_nl = nx * rd_x + ny * rd_y + nz * rd_z
+    bias = HIT_BIAS if dot_nl > 0.0 else -HIT_BIAS
 
-    return 1.0
+    ro_x = hit_x + nx * bias
+    ro_y = hit_y + ny * bias
+    ro_z = hit_z + nz * bias
 
+    t, _, hit_type, _, _, _ = trace_scene(
+        ro_x, ro_y, ro_z,
+        rd_x, rd_y, rd_z,
+        spheres, boxes, triangles, plane_h
+    )
 
-@cuda.jit(device=True)
-def random_hemisphere(nx, ny, nz, rng_states, thread_id):
-    # Cosine-weighted-ish hemisphere sample around normal.
-    ux, uy, uz = random_unit_vector(rng_states, thread_id)
-    rx = nx + ux
-    ry = ny + uy
-    rz = nz + uz
+    if t < HIT_BIAS:
+        return 1.0
 
-    dl = math.sqrt(rx * rx + ry * ry + rz * rz)
-    if dl > EPS:
-        inv = 1.0 / dl
-        rx *= inv
-        ry *= inv
-        rz *= inv
+    if hit_type == 0:
+        return 1.0
 
-    if rx * nx + ry * ny + rz * nz < 0.0:
-        rx = -rx
-        ry = -ry
-        rz = -rz
-
-    return rx, ry, rz
+    return 0.0
 
 
 @cuda.jit(device=True)
@@ -415,16 +410,6 @@ def aces_tonemap(x):
     return saturate01(y)
 
 
-@cuda.jit(device=True)
-def schlick_fresnel(cos_theta, ior):
-    if cos_theta < 0.0:
-        cos_theta = -cos_theta
-
-    r0 = (1.0 - ior) / (1.0 + ior)
-    r0 = r0 * r0
-    return r0 + (1.0 - r0) * (1.0 - cos_theta) ** 5
-
-
 @cuda.jit
 def render_sample_kernel(
     sample_rgb,
@@ -435,7 +420,7 @@ def render_sample_kernel(
     H,
     aspect,
     samples,
-    bounces,
+    bounces,  # игнорируем
     ambient_on,
     sky_on,
     soft_shadow_on,
@@ -452,6 +437,7 @@ def render_sample_kernel(
     up,
     spheres,
     boxes,
+    triangles,
     plane_h,
     diffuse_gi_strength,
     materials,
@@ -465,31 +451,14 @@ def render_sample_kernel(
 
     thread_id = y * W + x
 
-    prev_count = sample_count[y, x]
-    prev_lum = 0.0
-    if prev_count > 0.0:
-        prev_r = accum_rgb[y, x, 0] / prev_count
-        prev_g = accum_rgb[y, x, 1] / prev_count
-        prev_b = accum_rgb[y, x, 2] / prev_count
-        prev_lum = luminance_of(prev_r, prev_g, prev_b)
-
-    target_samples = samples
-    if prev_count > 0.0 and samples > ADAPTIVE_MIN_SAMPLES:
-        target_samples = samples
-
     out_r = 0.0
     out_g = 0.0
     out_b = 0.0
-    depth_sum = 0.0
-    nsum_x = 0.0
-    nsum_y = 0.0
-    nsum_z = 0.0
-    used = 0
+    depth = 0.0
 
-    for _sample in range(samples):
-        if _sample >= target_samples:
-            break
+    for _ in range(samples):
 
+        # --- generate ray ---
         nxs = ((x + xoroshiro128p_uniform_float32(rng_states, thread_id)) / W) * 2.0 - 1.0
         nys = 1.0 - ((y + xoroshiro128p_uniform_float32(rng_states, thread_id)) / H) * 2.0
         nxs *= aspect
@@ -497,6 +466,7 @@ def render_sample_kernel(
         rd_x = forward[0] + right[0] * nxs + up[0] * nys
         rd_y = forward[1] + right[1] * nxs + up[1] * nys
         rd_z = forward[2] + right[2] * nxs + up[2] * nys
+
         rl = math.sqrt(rd_x * rd_x + rd_y * rd_y + rd_z * rd_z)
         if rl > EPS:
             inv = 1.0 / rl
@@ -508,237 +478,62 @@ def render_sample_kernel(
         ro_y = ro[1]
         ro_z = ro[2]
 
-        throughput_r = 1.0
-        throughput_g = 1.0
-        throughput_b = 1.0
-        medium_absorption = 0.0
-        inside_medium = 0
-        accum_r = 0.0
-        accum_g = 0.0
-        accum_b = 0.0
-        first_depth = -1.0
-        first_nx = 0.0
-        first_ny = 1.0
-        first_nz = 0.0
+        # --- trace ---
+        t, mat_id, hit_type, hit_index, u, v = trace_scene(
+            ro_x, ro_y, ro_z,
+            rd_x, rd_y, rd_z,
+            spheres, boxes, triangles, plane_h
+        )
 
-        for bounce in range(bounces):
-            t, mat_id, hit_type, hit_index = trace_scene(ro_x, ro_y, ro_z, rd_x, rd_y, rd_z, spheres, boxes, plane_h)
-
-            if t < 0.0:
-                if sky_on == 1:
-                    sky = 0.2 + 0.5 * (rd_y * 0.5 + 0.5)
-                    accum_r += throughput_r * sky
-                    accum_g += throughput_g * sky
-                    accum_b += throughput_b * sky
-                break
+        if t > 0.0:
 
             hit_x = ro_x + rd_x * t
             hit_y = ro_y + rd_y * t
             hit_z = ro_z + rd_z * t
-            nx, ny, nz = get_normal(hit_x, hit_y, hit_z, hit_type, hit_index, spheres, boxes)
 
-            if inside_medium == 1 and medium_absorption > 0.0:
-                beer = math.exp(-medium_absorption * t)
-                throughput_r *= beer
-                throughput_g *= beer
-                throughput_b *= beer
+            nx, ny, nz = get_normal(
+                hit_x, hit_y, hit_z,
+                hit_type, hit_index,
+                spheres, boxes, triangles,
+                u, v
+            )
 
-            if bounce == 0:
-                first_depth = t
-                first_nx = nx
-                first_ny = ny
-                first_nz = nz
-
-            lambert = nx * lx + ny * ly + nz * lz
+            lambert = (nx * lx + ny * ly + nz * lz)
             if lambert < 0.0:
                 lambert = 0.0
 
-            shadow = compute_shadow(hit_x, hit_y, hit_z, nx, ny, nz, lx, ly, lz, soft_shadow_on, hard_shadow_on, spheres, boxes, plane_h, rng_states, thread_id)
-            lighting = local_lighting(rd_x, rd_y, rd_z, nx, ny, nz, lx, ly, lz, mat_id, lambert, shadow, materials, ambient_on)
+            if lambert <= 0.0:
+                visibility = 1.0
+            else:
+                visibility = simple_shadow(
+                    hit_x, hit_y, hit_z,
+                    nx, ny, nz,
+                    lx, ly, lz,
+                    spheres, boxes, triangles, plane_h
+                )
+
+            lighting = lambert * visibility
 
             base_r = materials[mat_id, 8]
             base_g = materials[mat_id, 9]
             base_b = materials[mat_id, 10]
-            reflectivity = materials[mat_id, 3]
-            roughness = materials[mat_id, 4]
-            refractivity = materials[mat_id, 5]
-            ior = materials[mat_id, 6]
-            absorption = materials[mat_id, 7]
 
-            local_r = base_r * lighting
-            local_g = base_g * lighting
-            local_b = base_b * lighting
+            out_r += base_r * lighting
+            out_g += base_g * lighting
+            out_b += base_b * lighting
+            depth += t
 
-            accum_r += throughput_r * local_r * DIRECT_WEIGHT
-            accum_g += throughput_g * local_g * DIRECT_WEIGHT
-            accum_b += throughput_b * local_b * DIRECT_WEIGHT
+    inv = 1.0 / samples
 
-            next_ro_x = hit_x + nx * HIT_BIAS
-            next_ro_y = hit_y + ny * HIT_BIAS
-            next_ro_z = hit_z + nz * HIT_BIAS
-            next_rd_x = rd_x
-            next_rd_y = rd_y
-            next_rd_z = rd_z
-            if reflection_on == 0:
-                reflectivity = 0.0
-            if refraction_on == 0:
-                refractivity = 0.0
+    sample_rgb[y, x, 0] = out_r * inv
+    sample_rgb[y, x, 1] = out_g * inv
+    sample_rgb[y, x, 2] = out_b * inv
+    sample_depth[y, x] = depth * inv
 
-            # Energy-conserving component normalization.
-            total_spec = reflectivity + refractivity
-            if total_spec > 1.0:
-                inv_total = 1.0 / total_spec
-                reflectivity *= inv_total
-                refractivity *= inv_total
-
-            diffuse_weight = 1.0 - reflectivity - refractivity
-            if diffuse_weight < 0.0:
-                diffuse_weight = 0.0
-
-            cos_theta = -(rd_x * nx + rd_y * ny + rd_z * nz)
-            if cos_theta < 0.0:
-                cos_theta = 0.0
-            if cos_theta > 1.0:
-                cos_theta = 1.0
-
-            fresnel = 1.0
-            if fresnel_on == 1:
-                f0 = (1.0 - ior) / (1.0 + ior)
-                f0 = f0 * f0
-                fresnel = schlick(f0, cos_theta)
-
-            reflection_weight = reflectivity * fresnel
-            refraction_weight = refractivity * (1.0 - fresnel)
-            diffuse_weight *= (1.0 - fresnel)
-
-            weight_sum = reflection_weight + refraction_weight + diffuse_weight
-            if weight_sum <= 1e-6:
-                break
-
-            inv_weight_sum = 1.0 / weight_sum
-            reflection_weight *= inv_weight_sum
-            refraction_weight *= inv_weight_sum
-            diffuse_weight *= inv_weight_sum
-
-            cos_theta = -(rd_x * nx + rd_y * ny + rd_z * nz)
-            if cos_theta < 0.0:
-                cos_theta = -cos_theta
-
-            fresnel = schlick_fresnel(cos_theta, ior)
-
-            rnd = xoroshiro128p_uniform_float32(rng_states, thread_id)
-            if rnd < reflection_weight:
-                rx, ry, rz = reflect_components(rd_x, rd_y, rd_z, nx, ny, nz)
-                next_rd_x, next_rd_y, next_rd_z = perturb_direction(rx, ry, rz, roughness, rng_states, thread_id)
-                throughput_r *= base_r * reflection_weight * REFLECT_ATTEN
-                throughput_g *= base_g * reflection_weight * REFLECT_ATTEN
-                throughput_b *= base_b * reflection_weight * REFLECT_ATTEN
-            elif rnd < (reflection_weight + refraction_weight):
-                tx, ty, tz, ok = refract_components(rd_x, rd_y, rd_z, nx, ny, nz, ior)
-                use_reflect = 0
-                if ok == 0:
-                    use_reflect = 1
-                else:
-                    if xoroshiro128p_uniform_float32(rng_states, thread_id) < fresnel:
-                        use_reflect = 1
-
-                if ok == 0:
-                    # TIR fallback -> reflection branch.
-                    rx, ry, rz = reflect_components(rd_x, rd_y, rd_z, nx, ny, nz)
-                    next_rd_x, next_rd_y, next_rd_z = perturb_direction(rx, ry, rz, roughness, rng_states, thread_id)
-                    throughput_r *= base_r * reflection_weight * REFLECT_ATTEN
-                    throughput_g *= base_g * reflection_weight * REFLECT_ATTEN
-                    throughput_b *= base_b * reflection_weight * REFLECT_ATTEN
-                else:
-                    next_rd_x, next_rd_y, next_rd_z = perturb_direction(tx, ty, tz, roughness, rng_states, thread_id)
-                    ndot = rd_x * nx + rd_y * ny + rd_z * nz
-                    if ndot < 0.0:
-                        next_ro_x = hit_x - nx * HIT_BIAS
-                        next_ro_y = hit_y - ny * HIT_BIAS
-                        next_ro_z = hit_z - nz * HIT_BIAS
-                        inside_medium = 1
-                        medium_absorption = absorption
-                    else:
-                        next_ro_x = hit_x + nx * HIT_BIAS
-                        next_ro_y = hit_y + ny * HIT_BIAS
-                        next_ro_z = hit_z + nz * HIT_BIAS
-                        inside_medium = 0
-                        medium_absorption = 0.0
-                    throughput_r *= base_r * refraction_weight
-                    throughput_g *= base_g * refraction_weight
-                    throughput_b *= base_b * refraction_weight
-            else:
-                dx, dy, dz = random_hemisphere(nx, ny, nz, rng_states, thread_id)
-                next_rd_x = dx
-                next_rd_y = dy
-                next_rd_z = dz
-                throughput_r *= base_r * diffuse_gi_strength * diffuse_weight
-                throughput_g *= base_g * diffuse_gi_strength * diffuse_weight
-                throughput_b *= base_b * diffuse_gi_strength * diffuse_weight
-
-            ro_x = next_ro_x
-            ro_y = next_ro_y
-            ro_z = next_ro_z
-            rd_x = next_rd_x
-            rd_y = next_rd_y
-            rd_z = next_rd_z
-
-            if bounce >= 2:
-                rr = luminance_of(throughput_r, throughput_g, throughput_b)
-                if rr < 1e-5:
-                    break
-                rr = rr if rr < 0.95 else 0.95
-                if xoroshiro128p_uniform_float32(rng_states, thread_id) > rr:
-                    break
-                inv_rr = 1.0 / rr
-                throughput_r *= inv_rr
-                throughput_g *= inv_rr
-                throughput_b *= inv_rr
-
-        out_r += accum_r
-        out_g += accum_g
-        out_b += accum_b
-        depth_sum += first_depth if first_depth > 0.0 else 0.0
-        nsum_x += first_nx
-        nsum_y += first_ny
-        nsum_z += first_nz
-        used += 1
-
-        if prev_count > 0.0 and used == 1 and samples > ADAPTIVE_MIN_SAMPLES:
-            sample_lum = luminance_of(accum_r, accum_g, accum_b)
-            variance = abs(sample_lum - prev_lum)
-            if variance < ADAPTIVE_VARIANCE_THRESHOLD:
-                target_samples = ADAPTIVE_MIN_SAMPLES
-
-    if used == 0:
-        sample_rgb[y, x, 0] = 0.0
-        sample_rgb[y, x, 1] = 0.0
-        sample_rgb[y, x, 2] = 0.0
-        sample_depth[y, x] = 0.0
-        sample_normal[y, x, 0] = 0.0
-        sample_normal[y, x, 1] = 1.0
-        sample_normal[y, x, 2] = 0.0
-        sample_used[y, x] = 0.0
-        return
-
-    inv_used = 1.0 / used
-    sample_rgb[y, x, 0] = out_r * inv_used
-    sample_rgb[y, x, 1] = out_g * inv_used
-    sample_rgb[y, x, 2] = out_b * inv_used
-    sample_depth[y, x] = depth_sum * inv_used
-
-    nn = math.sqrt(nsum_x * nsum_x + nsum_y * nsum_y + nsum_z * nsum_z)
-    if nn > EPS:
-        inv_nn = 1.0 / nn
-        sample_normal[y, x, 0] = nsum_x * inv_nn
-        sample_normal[y, x, 1] = nsum_y * inv_nn
-        sample_normal[y, x, 2] = nsum_z * inv_nn
-    else:
-        sample_normal[y, x, 0] = 0.0
-        sample_normal[y, x, 1] = 1.0
-        sample_normal[y, x, 2] = 0.0
-
-    sample_used[y, x] = float(used)
+    sample_normal[y, x, 0] = 0.0
+    sample_normal[y, x, 1] = 1.0
+    sample_normal[y, x, 2] = 0.0
+    sample_used[y, x] = 1.0
 
 
 @cuda.jit
@@ -939,10 +734,12 @@ def render_frame_buffer(
     # ---- unpack scene ----
     spheres = scene_data["spheres"]
     boxes = scene_data["boxes"]
+    triangles = scene_data["triangles"]
     plane_y = scene_data["plane_y"]
 
     d_spheres = scene_data["d_spheres"]
     d_boxes = scene_data["d_boxes"]
+    d_triangles = scene_data["d_triangles"]
     d_materials = scene_data["d_materials"]
 
     # ---- unpack camera ----
@@ -1047,6 +844,7 @@ def render_frame_buffer(
         d_up,
         d_spheres,
         d_boxes,
+        d_triangles,
         np.float32(plane_y),
         diffuse_gi_strength,
         d_materials,
