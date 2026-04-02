@@ -2,6 +2,7 @@ import pygame
 import sys
 from config import default as config
 import math
+import numpy as np
 
 from engine.core import Engine
 from engine.render import draw_buffer
@@ -9,7 +10,10 @@ from pipeline.baker import bake_frames, save_frames
 from pipeline.video_ascii import save_video_ascii
 from utils.char_calibration import build_char_ramp
 from apps.viewer.ui import Slider, Button, Dropdown, Checkbox
+from engine.camera import Camera
 
+camera = Camera([0, 2, -5])
+mouse_locked = False
 
 def compute_char_pixel_size(width, height, target_chars):
     return math.sqrt((width * height) / target_chars)
@@ -67,7 +71,7 @@ font, char_w, char_h = find_font_for_target(target_w, target_h, config.FONT["nam
 chars = build_char_ramp(config.RENDER["chars"], font)
 char_cache = {"__font__": font, **{c: font.render(c, False, (255, 255, 255)) for c in chars},}
 
-mode = config.MODE["type"]
+mode = "realtime"
 
 frames = None
 frame_index = 0
@@ -94,10 +98,8 @@ def create_ui_controls(ui_width, selected_resolution):
     sliders_local = [
         Slider(PANEL_PADDING, y + UI_SPACING * 0, slider_width, 2, 10, config.CAMERA["radius"], "cam radius"),
         Slider(PANEL_PADDING, y + UI_SPACING * 1, slider_width, -5, 5, config.CAMERA["height"], "cam height"),
-        Slider(PANEL_PADDING, y + UI_SPACING * 2, slider_width, 0.05, 1.0, config.CAMERA["speed"], "cam speed"),
-        Slider(PANEL_PADDING, y + UI_SPACING * 3, slider_width, 30, 600, config.BAKE["frames"], "frames", True),
-        Slider(PANEL_PADDING, y + UI_SPACING * 4, slider_width, 1, 16, config.RENDER["bounces"], "bounces", True),
-        Slider(PANEL_PADDING, y + UI_SPACING * 5, slider_width, 1, 8, config.RENDER["samples"], "samples", True),
+        Slider(PANEL_PADDING, y + UI_SPACING * 2, slider_width, 30, 600, config.BAKE["frames"], "frames", True),
+        Slider(PANEL_PADDING, y + UI_SPACING * 3, slider_width, 1, 8, config.RENDER["samples"], "samples", True),
     ]
 
     resolution_options = [f"{i}: {w}x{h}" for i, (w, h) in enumerate(RESOLUTIONS)]
@@ -116,13 +118,7 @@ def create_ui_controls(ui_width, selected_resolution):
 
     checkbox_start_y = y + UI_SPACING * 8
     checkboxes_local = [
-        Checkbox(PANEL_PADDING, checkbox_start_y + UI_SPACING * 0, 20, "Ambient", int(config.LIGHTING["ambient"]), key="ambient"),
-        Checkbox(PANEL_PADDING, checkbox_start_y + UI_SPACING * 1, 20, "Sky", int(config.LIGHTING["sky"]), key="sky"),
-        Checkbox(PANEL_PADDING, checkbox_start_y + UI_SPACING * 2, 20, "Soft Shadows", int(config.LIGHTING["soft_shadows"]), key="soft_shadows"),
-        Checkbox(PANEL_PADDING, checkbox_start_y + UI_SPACING * 3, 20, "Hard Shadows", int(config.LIGHTING["hard_shadows"]), key="hard_shadows"),
-        Checkbox(PANEL_PADDING, checkbox_start_y + UI_SPACING * 4, 20, "Reflections", int(config.LIGHTING["reflections"]), key="reflections"),
-        Checkbox(PANEL_PADDING, checkbox_start_y + UI_SPACING * 5, 20, "Fresnel", int(config.LIGHTING["fresnel"]), key="fresnel"),
-        Checkbox(PANEL_PADDING, checkbox_start_y + UI_SPACING * 6, 20, "Refraction", int(config.LIGHTING["refraction"]), key="refraction"),
+        Checkbox(PANEL_PADDING, checkbox_start_y + UI_SPACING * 0, 20, "TAA", int(config.TEMPORAL["enabled"]), key="temporal"),
     ]
 
     return sliders_local, dropdown, bake_button, exit_button, checkboxes_local
@@ -249,11 +245,30 @@ while running:
                 layout_footer_buttons()
                 clamp_scroll()
 
+        # --- CAMERA MOUSE LOCK ---
+        if event.type == pygame.MOUSEBUTTONDOWN:
+            if event.button == 1 and not is_inside_ui(pygame.mouse.get_pos()):
+                mouse_locked = True
+                pygame.mouse.set_visible(False)
+                pygame.event.set_grab(True)
+
+        if event.type == pygame.MOUSEBUTTONUP:
+            if event.button == 1:
+                mouse_locked = False
+                pygame.mouse.set_visible(True)
+                pygame.event.set_grab(False)
+
         if event.type == pygame.MOUSEWHEEL:
             mouse_pos = pygame.mouse.get_pos()
+
             if is_inside_ui_scroll_area(mouse_pos):
                 scroll_offset -= event.y * SCROLL_SPEED
                 clamp_scroll()
+            else:
+                zoom_speed = 0.1
+
+                camera.fov -= event.y * zoom_speed
+                camera.fov = max(camera.fov_min, min(camera.fov_max, camera.fov))
 
         if event.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEMOTION):
             if hasattr(event, "pos") and is_inside_ui(event.pos):
@@ -290,12 +305,13 @@ while running:
 
     config.CAMERA["radius"] = sliders[0].value
     config.CAMERA["height"] = sliders[1].value
-    config.CAMERA["speed"] = sliders[2].value
-    config.RENDER["frames"] = int(sliders[3].value)
-    config.RENDER["bounces"] = int(sliders[4].value)
-    config.BAKE["samples"] = int(sliders[5].value)
+    config.BAKE["frames"] = int(sliders[2].value)
+    config.RENDER["samples"] = int(sliders[3].value)
     for c in checkboxes:
-        config.LIGHTING[c.key] = int(c.value)
+        if c.key == "temporal":
+            config.TEMPORAL["enabled"] = int(c.value)
+        else:
+            config.LIGHTING[c.key] = int(c.value)
 
     if resolution_dropdown.changed:
         resolution_dropdown.changed = False
@@ -303,11 +319,41 @@ while running:
 
     clamp_scroll()
 
-    camera_angle = math.sin(scene_time * config.CAMERA["speed"]) * 0.5
+    keys = pygame.key.get_pressed()
+
+    forward, right, up = camera.get_vectors()
+
+    move = np.zeros(3, dtype=np.float32)
+
+    if keys[pygame.K_w]:
+        move += forward
+    if keys[pygame.K_s]:
+        move -= forward
+    if keys[pygame.K_d]:
+        move += right
+    if keys[pygame.K_a]:
+        move -= right
+
+    # нормализация чтобы не было быстрее по диагонали
+    if np.linalg.norm(move) > 0:
+        move = move / np.linalg.norm(move)
+
+    camera.pos += move * camera.speed * dt
+
+    # --- CAMERA ROTATION ---
+    if mouse_locked:
+        dx, dy = pygame.mouse.get_rel()
+
+        camera.yaw -= dx * camera.sensitivity
+        camera.pitch -= dy * camera.sensitivity
+
+        camera.pitch = max(-1.5, min(1.5, camera.pitch))
+    else:
+        pygame.mouse.get_rel()
 
     if mode == "realtime":
         buffer_idx, buffer_rgb = engine.render(
-            camera_angle, dt, chars, W, H, aspect,
+            camera, dt, chars, W, H, aspect,
             char_w, char_h
         )
         draw_buffer(render_surface, buffer_idx, chars, char_cache, char_w, char_h, buffer_rgb)
@@ -354,9 +400,6 @@ while running:
         save_video_ascii(frames, chars, char_cache, char_w, char_h)
 
         print("BAKE DONE")
-
-        config.RENDER["samples"] = old_samples
-        config.RENDER["bounces"] = old_bounces
 
     if exit_button.clicked:
         exit_button.clicked = False

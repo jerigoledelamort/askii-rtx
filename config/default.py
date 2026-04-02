@@ -9,23 +9,30 @@ WINDOW = {
     "fps": 50
 }
 
-# -------- MODE --------
-MODE = {
-    "type": "realtime",            # "realtime" | "bake"
-    "bake_frames": 240,        # количество кадров цикла
-    "playback_fps": 30,
-    "save_file": "frames.pkl"
+BAKE = {
+    "frames": 120,        
 }
 
-BAKE = {
-    "frames": 120,        # длина анимации
+# -------- TAA --------
+TEMPORAL = {
+    "enabled": 1,
+
+    # базовое смешивание
+    "base_alpha": 0.30,
+
+    # влияние движения камеры
+    "motion_scale": 10.0,
+    "motion_boost": 0.5,
+
+    # clamp
+    "base_clamp": 0.02,
+    "clamp_adaptive_scale": 2.0,
 }
 
 # -------- RENDER --------
 RENDER = {
     "chars": " .,:-~=+*#%@",
-    "bounces": 8,
-    "samples": 8,
+    "samples": 2,
     "exposure": 1.0,
     "gamma": 1.0,
     "diffuse_gi_strength": 0.4,
@@ -43,31 +50,18 @@ PERFORMANCE = {
 
 # -------- CAMERA --------
 CAMERA = {
-    "mode": "orbit",           # orbit | wave
-
-    "radius": 2.0,             # дистанция до центра
-    "height": 1.0,             # базовая высота
-
-    "speed": 0.05,              # оборотов в секунду (задаёт длительность цикла)
-
-    "wave_amplitude": 0.3,     # вертикальное движение
-    "wave_speed": 2.0
+    "radius": 2.0,
+    "height": 1.0,
 }
 
 # -------- LIGHT --------
 LIGHT = {
     "direction": (0.0, 1.0, 0.0),
-    "intensity": 1.0
 }
 
 LIGHTING = {
     "ambient": 1,
-    "sky": 1,
-    "soft_shadows": 0,
     "hard_shadows": 1,
-    "reflections": 1,
-    "refraction": 0,
-    "fresnel": 1,
 }
 
 # -------- SCENE --------

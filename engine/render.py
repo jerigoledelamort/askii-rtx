@@ -41,6 +41,9 @@ class RendererState:
 
         self.prev_camera_state = None
 
+        self.temporal_lum = None
+        self.temporal_shape = None
+
 
 def reset_accumulation_buffers():
     global _d_accum_rgb, _d_sample_count, _accum_shape, _prev_camera_state
@@ -420,7 +423,7 @@ def render_sample_kernel(
     H,
     aspect,
     samples,
-    bounces,  # игнорируем
+    _bounces_unused,  # игнорируем
     ambient_on,
     sky_on,
     soft_shadow_on,
@@ -562,7 +565,7 @@ def render_sample_kernel(
     if variance < 0.02:
         local_samples = 1
     elif variance < 0.1:
-        local_samples = samples // 2
+        local_samples = max(1, samples // 2)
 
     for _ in range(local_samples):
 
@@ -633,6 +636,9 @@ def render_sample_kernel(
             out_g += base_g * lighting
             out_b += base_b * lighting
             depth += t
+
+    if local_samples <= 0:
+        local_samples = 1
 
     inv = 1.0 / local_samples
 
@@ -824,6 +830,7 @@ def render_frame_buffer(
     scene_data,
     camera_data,
     render_settings,
+    temporal_settings,   
     lighting_settings,
     light_data,
     chars,
@@ -853,15 +860,14 @@ def render_frame_buffer(
     light = get_light(light_data)
 
     samples = int(render_settings["samples"])
-    bounces = int(render_settings["bounces"])
 
-    ambient_on = int(lighting_settings["ambient"])
-    sky_on = int(lighting_settings["sky"])
-    soft_shadow_on = int(lighting_settings["soft_shadows"])
-    hard_shadow_on = int(lighting_settings["hard_shadows"])
-    reflection_on = int(lighting_settings["reflections"])
-    refraction_on = int(lighting_settings["refraction"])
-    fresnel_on = int(lighting_settings.get("fresnel", 1))
+    reflection_on = 0
+    refraction_on = 0
+    fresnel_on = 0
+    soft_shadow_on = 0
+    sky_on = 0
+    ambient_on = int(lighting_settings.get("ambient", 1))
+    hard_shadow_on = int(lighting_settings.get("hard_shadows", 1))
 
     exposure = np.float32(render_settings.get("exposure", 1.0))
     gamma = np.float32(render_settings.get("gamma", 1.0))
@@ -870,6 +876,12 @@ def render_frame_buffer(
     # ---- change detection ----
     scene_changed = scene_data["changed"]
     camera_state = _camera_state(ro, forward, right, up)
+
+    if state.prev_camera_state is None:
+        camera_motion = 0.0
+    else:
+        diff = camera_state - state.prev_camera_state
+        camera_motion = np.linalg.norm(diff)
 
     camera_changed = (
         state.prev_camera_state is None
@@ -928,7 +940,7 @@ def render_frame_buffer(
         H_chars,
         np.float32(aspect),
         samples,
-        bounces,
+        0,
         ambient_on,
         sky_on,
         soft_shadow_on,
@@ -982,6 +994,49 @@ def render_frame_buffer(
     luminance_buffer = d_luminance.copy_to_host()
     edge_buffer = d_edge.copy_to_host()
     buffer_rgb = d_buffer_rgb.copy_to_host()
+
+    if temporal_settings and temporal_settings["enabled"]:
+
+        # --- temporal buffer init (no blending yet) ---
+        if temporal_settings and temporal_settings["enabled"]:
+            base_alpha = temporal_settings["base_alpha"]
+            motion_scale = temporal_settings["motion_scale"]
+            motion_boost_k = temporal_settings["motion_boost"]
+
+            motion_boost = min(1.0, camera_motion * motion_scale)
+            alpha = base_alpha + motion_boost * motion_boost_k
+            alpha = min(alpha, 1.0)
+        else:
+            alpha = 1.0
+
+        if state.temporal_lum is None or state.temporal_shape != (H, W):
+            state.temporal_lum = luminance_buffer.copy()
+            state.temporal_shape = (H, W)
+        else:
+            history = state.temporal_lum
+            current = luminance_buffer
+
+            diff = np.abs(current - history)
+
+            if temporal_settings and temporal_settings["enabled"]:
+                base_clamp = temporal_settings["base_clamp"]
+                adaptive_scale = temporal_settings["clamp_adaptive_scale"]
+            else:
+                base_clamp = 0.05
+                adaptive_scale = 2.0
+
+            adaptive = diff * adaptive_scale
+            clamp_range = base_clamp + adaptive
+
+            min_val = current - clamp_range
+            max_val = current + clamp_range
+
+            history = np.clip(history, min_val, max_val)
+
+            # --- EMA ---
+            state.temporal_lum = history * (1.0 - alpha) + current * alpha
+
+        luminance_buffer = state.temporal_lum
 
     return luminance_buffer, edge_buffer, buffer_rgb
 

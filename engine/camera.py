@@ -121,41 +121,36 @@ def _resolve_camera_x_collision(desired_x, cy, cz, spheres, boxes, margin=0.3):
     return x
 
 
-def get_camera(angle, camera_settings, scene_data):
-    base_radius = float(camera_settings["radius"])
-    height = float(camera_settings["height"])
+class Camera:
+    def __init__(self, pos):
+        self.pos = np.array(pos, dtype=np.float32)
 
-    spheres = scene_data["spheres"]
-    boxes = scene_data["boxes"]
-    margin = 0.3
+        self.yaw = 0.0
+        self.pitch = 0.0
 
-    min_x, max_x, min_z, max_z = compute_scene_bounds(spheres, boxes)
-    center = np.array(
-        [
-            (min_x + max_x) * 0.5,
-            height,
-            (min_z + max_z) * 0.5,
-        ],
-        dtype=np.float32,
-    )
+        self.speed = 5.0
+        self.sensitivity = 0.002
 
-    desired_x = center[0] + base_radius * math.sin(angle)
-    clamped_x = clamp(desired_x, min_x + margin, max_x - margin)
+        # FOV
+        self.fov = 1.0
+        self.fov_min = 0.3
+        self.fov_max = 2.5
 
-    cam_z = center[2] - base_radius
-    cam_pos = np.array([clamped_x, height, cam_z], dtype=np.float32)
+    def get_vectors(self):
+        forward = np.array([
+            math.cos(self.pitch) * math.sin(self.yaw),
+            math.sin(self.pitch),
+            math.cos(self.pitch) * math.cos(self.yaw),
+        ], dtype=np.float32)
 
-    if check_collision_camera(cam_pos, spheres, boxes, margin=margin):
-        safe_x = _resolve_camera_x_collision(clamped_x, height, cam_z, spheres, boxes, margin)
-        safe_x = clamp(safe_x, min_x + margin, max_x - margin)
-        cam_pos[0] = np.float32(safe_x)
+        forward = normalize(forward)
 
-    target = np.array([center[0], center[1], center[2]], dtype=np.float32)
+        world_up = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+        right = normalize(cross(forward, world_up))
+        up = normalize(cross(right, forward))
 
-    forward = normalize(target - cam_pos)
+        # применяем FOV
+        right *= self.fov
+        up *= self.fov
 
-    world_up = np.array([0.0, 1.0, 0.0], dtype=np.float32)
-    right = normalize(cross(forward, world_up))
-    up = normalize(cross(right, forward))
-
-    return cam_pos, forward, right, up
+        return forward, right, up

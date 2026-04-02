@@ -1,4 +1,4 @@
-from engine.camera import get_camera
+from engine.camera import Camera
 from engine.render import render_frame_buffer, reset_accumulation_buffers
 from engine.render import RendererState
 from engine.scene import Scene
@@ -17,17 +17,14 @@ class Engine:
 
         self.state = RendererState()
 
-    def render(self, camera_angle, dt, chars, W, H, aspect, char_w, char_h):
+    def render(self, camera, dt, chars, W, H, aspect, char_w, char_h):
         # 1. сцена
         self.scene.update(dt)
         scene_data = self.scene.get_data()
 
         # 2. камера
-        ro, forward, right, up = get_camera(
-            camera_angle,
-            self.camera_settings,
-            scene_data
-        )
+        ro = camera.pos
+        forward, right, up = camera.get_vectors()
 
         camera_data = {
             "ro": ro,
@@ -43,6 +40,7 @@ class Engine:
             scene_data,
             camera_data,
             self.render_settings,
+            self.config.TEMPORAL,   
             self.lighting_settings,
             self.light_data,
             chars,
