@@ -567,6 +567,25 @@ def render_sample_kernel(
     elif variance < 0.1:
         local_samples = max(1, samples // 2)
 
+    # --- сразу после первого trace ---
+    if t > 0.0:
+        hit_x = ro_x + rd_x * t
+        hit_y = ro_y + rd_y * t
+        hit_z = ro_z + rd_z * t
+
+        nx, ny, nz = get_normal(
+            hit_x, hit_y, hit_z,
+            hit_type, hit_index,
+            spheres, boxes, triangles,
+            u, v
+        )
+
+        sample_normal[y, x, 0] = nx
+        sample_normal[y, x, 1] = ny
+        sample_normal[y, x, 2] = nz
+    else:
+        sample_normal[y, x, :] = 0.0
+
     for _ in range(local_samples):
 
         # --- generate ray ---
@@ -646,10 +665,6 @@ def render_sample_kernel(
     sample_rgb[y, x, 1] = out_g * inv
     sample_rgb[y, x, 2] = out_b * inv
     sample_depth[y, x] = depth * inv
-
-    sample_normal[y, x, 0] = 0.0
-    sample_normal[y, x, 1] = 1.0
-    sample_normal[y, x, 2] = 0.0
     sample_used[y, x] = 1.0
 
 
@@ -735,7 +750,8 @@ def postprocess_kernel(
     if x + 1 < W:
         d2 = depth_buffer[y, x + 1]
         if d2 > 0.0 and depth > 0.0:
-            dd = abs(depth - d2) * 0.6
+            dd = abs(depth - d2) / (depth + 1e-4)
+            dd *= 0.8
             if dd > edge:
                 edge = dd
         nd = 0.0
@@ -745,12 +761,41 @@ def postprocess_kernel(
     if y + 1 < H:
         d2 = depth_buffer[y + 1, x]
         if d2 > 0.0 and depth > 0.0:
-            dd = abs(depth - d2) * 0.6
+            dd = abs(depth - d2) / (depth + 1e-4)
+            dd *= 0.8
             if dd > edge:
                 edge = dd
         nd = 0.0
         if nd > edge:
             edge = nd
+
+    lum_center = luminance_of(r, g, b)
+
+    if x + 1 < W:
+        c2 = sample_count[y, x + 1]
+        if c2 > 0.0:
+            r2 = accum_rgb[y, x + 1, 0] / c2
+            g2 = accum_rgb[y, x + 1, 1] / c2
+            b2 = accum_rgb[y, x + 1, 2] / c2
+
+            lum2 = luminance_of(r2, g2, b2)
+            dl = abs(lum_center - lum2) * 0.5
+
+            if dl > edge:
+                edge = dl
+
+    if y + 1 < H:
+        c2 = sample_count[y + 1, x]
+        if c2 > 0.0:
+            r2 = accum_rgb[y + 1, x, 0] / c2
+            g2 = accum_rgb[y + 1, x, 1] / c2
+            b2 = accum_rgb[y + 1, x, 2] / c2
+
+            lum2 = luminance_of(r2, g2, b2)
+            dl = abs(lum_center - lum2) * 0.5
+
+            if dl > edge:
+                edge = dl
 
     edge = saturate01(edge)
     # Dithering to reduce banding
@@ -760,7 +805,7 @@ def postprocess_kernel(
     lum = luminance_of(r, g, b)
     lum = saturate01(lum + dither)
     # preserve shading while nudging structure with edge intensity
-    lum = saturate01(lum + edge * 0.2)
+    lum = saturate01(lum)
 
     # decouple symbol mapping from color energy response
     symbol_lum = lum ** 0.85
@@ -797,6 +842,7 @@ def postprocess_kernel(
 
 
 def ascii_map(luminance_buffer, edge_buffer, chars):
+    # --- histogram remap (оставляем как есть) ---
     hist, bin_edges = np.histogram(
         luminance_buffer,
         bins=max(8, min(128, len(chars))),
@@ -816,13 +862,40 @@ def ascii_map(luminance_buffer, edge_buffer, chars):
     else:
         remapped = luminance_buffer
 
+    # --- shading ---
     char_scale = float(len(chars) - 1)
-    idx = np.clip((remapped * char_scale).astype(np.int32), 0, len(chars) - 1)
+    char_idx = np.clip((remapped * char_scale).astype(np.int32), 0, len(chars) - 1)
 
-    strong_edge_idx = int(0.88 * char_scale)
-    idx = np.where(edge_buffer > 0.28, np.maximum(idx, strong_edge_idx), idx)
+    # --- edge mask ---
+    edge_mask = edge_buffer > 0.30
 
-    return idx.astype(np.int32)
+    # --- gradient direction ---
+    gy, gx = np.gradient(edge_buffer)
+
+    abs_dx = np.abs(gx)
+    abs_dy = np.abs(gy)
+
+    edge_dir = np.zeros_like(char_idx, dtype=np.int32)
+
+    # вертикали
+    vertical = abs_dx > abs_dy * 1.5
+
+    # горизонтали
+    horizontal = abs_dy > abs_dx * 1.5
+
+    # всё остальное — диагонали
+    diag = edge_mask & ~(vertical | horizontal)
+    vertical = edge_mask & vertical
+    horizontal = edge_mask & horizontal
+
+    edge_dir[vertical] = 0
+    edge_dir[horizontal] = 1
+    edge_dir[diag] = 2
+
+    # знак диагонали
+    diag_sign = gx * gy
+
+    return char_idx, edge_mask, edge_dir, diag_sign
 
 
 def render_frame_buffer(
@@ -994,6 +1067,7 @@ def render_frame_buffer(
     luminance_buffer = d_luminance.copy_to_host()
     edge_buffer = d_edge.copy_to_host()
     buffer_rgb = d_buffer_rgb.copy_to_host()
+    normal_buffer = d_sample_normal.copy_to_host()
 
     if temporal_settings and temporal_settings["enabled"]:
 
@@ -1038,27 +1112,70 @@ def render_frame_buffer(
 
         luminance_buffer = state.temporal_lum
 
-    return luminance_buffer, edge_buffer, buffer_rgb
+    return luminance_buffer, edge_buffer, buffer_rgb, normal_buffer
 
 
-def draw_buffer(surface, buffer_idx, chars, char_cache, char_w, char_h, buffer_rgb=None):
-    if buffer_rgb is None:
-        for y, row in enumerate(buffer_idx):
-            for x, idx in enumerate(row):
-                char = chars[idx]
-                surface.blit(char_cache[char], (x * char_w, y * char_h))
-        return
+def draw_buffer(
+    surface,
+    char_idx,
+    edge_mask,
+    edge_dir,
+    diag_sign,
+    edge_buffer,
+    chars,
+    char_cache,
+    char_w,
+    char_h,
+    buffer_rgb
+):
+    H, W = char_idx.shape
 
-    for y, row in enumerate(buffer_idx):
-        for x, idx in enumerate(row):
-            char = chars[idx]
+    for y in range(H):
+        for x in range(W):
+
+            # --- базовая яркость ---
+            base_idx = char_idx[y, x]
+            lum = base_idx / (len(chars) - 1)
+
+            # --- edge ---
+            edge = edge_buffer[y, x]
+
+            # подавление в темноте
+            edge_weight = edge * (lum ** 1.5)
+
+            # --- мягкое влияние edge ---
+            edge_boost = int(edge_weight * 4.0)
+            final_idx = min(len(chars) - 1, base_idx + edge_boost)
+
+            char = chars[final_idx]
+
+            # --- directional override (сильные грани) ---
+            if edge > 0.6:
+                d = edge_dir[y, x]
+
+                if d == 0:
+                    char = '|'
+                elif d == 1:
+                    char = '-'
+                else:
+                    if diag_sign[y, x] > 0:
+                        char = '/'
+                    else:
+                        char = '\\'
+
+            # --- цвет ---
             r = int(buffer_rgb[y, x, 0] * 255.0)
             g = int(buffer_rgb[y, x, 1] * 255.0)
             b = int(buffer_rgb[y, x, 2] * 255.0)
-            glyph = char_cache.get((char, r, g, b))
+
+            # --- кеш глифов ---
+            key = (char, r, g, b)
+            glyph = char_cache.get(key)
+
             if glyph is None:
                 glyph = pygame_font_render(char_cache, char, r, g, b)
-                char_cache[(char, r, g, b)] = glyph
+                char_cache[key] = glyph
+
             surface.blit(glyph, (x * char_w, y * char_h))
 
 

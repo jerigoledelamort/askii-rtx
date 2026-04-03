@@ -2,7 +2,6 @@ from engine.camera import Camera
 from engine.render import render_frame_buffer, reset_accumulation_buffers
 from engine.render import RendererState
 from engine.scene import Scene
-from engine.render import ascii_map
 import numpy as np
 
 
@@ -35,7 +34,7 @@ class Engine:
 
         # 3. рендер
         # --- GPU ---
-        luminance, edge, rgb = render_frame_buffer(
+        luminance, edge, rgb, normal = render_frame_buffer(
             W, H, aspect,
             scene_data,
             camera_data,
@@ -47,9 +46,7 @@ class Engine:
             self.state
         )
 
-        buffer_idx = ascii_map(luminance, edge, chars)
-
-        return buffer_idx, rgb
+        return luminance, edge, rgb, normal
 
     def reset(self):
         self.state = RendererState()

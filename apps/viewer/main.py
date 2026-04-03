@@ -5,7 +5,7 @@ import math
 import numpy as np
 
 from engine.core import Engine
-from engine.render import draw_buffer
+from engine.render import draw_buffer, ascii_map
 from pipeline.baker import bake_frames, save_frames
 from pipeline.video_ascii import save_video_ascii
 from utils.char_calibration import build_char_ramp
@@ -352,19 +352,53 @@ while running:
         pygame.mouse.get_rel()
 
     if mode == "realtime":
-        buffer_idx, buffer_rgb = engine.render(
+        luminance_buffer, edge_buffer, buffer_rgb, normal_buffer = engine.render(
             camera, dt, chars, W, H, aspect,
             char_w, char_h
         )
-        draw_buffer(render_surface, buffer_idx, chars, char_cache, char_w, char_h, buffer_rgb)
+
+        char_idx, edge_mask, edge_dir, diag_sign = ascii_map(
+            luminance_buffer,
+            edge_buffer,
+            chars
+        )
+
+        draw_buffer(
+            render_surface,
+            char_idx,
+            edge_mask,
+            edge_dir,
+            diag_sign,
+            edge_buffer,
+            chars,
+            char_cache,
+            char_w,
+            char_h,
+            buffer_rgb
+        )
 
     elif mode == "playback":
-        buffer_idx, buffer_rgb = frames[frame_index]
-        draw_buffer(render_surface, buffer_idx, chars, char_cache, char_w, char_h, buffer_rgb)
+        luminance_buffer, edge_buffer, buffer_rgb = frames[frame_index]
 
-        frame_index += 1
-        if frame_index >= len(frames):
-            frame_index = 0
+        char_idx, edge_mask, edge_dir, diag_sign = ascii_map(
+            luminance_buffer,
+            edge_buffer,
+            chars
+        )
+
+        draw_buffer(
+            render_surface,
+            char_idx,
+            edge_mask,
+            edge_dir,
+            diag_sign,
+            edge_buffer,
+            chars,
+            char_cache,
+            char_w,
+            char_h,
+            buffer_rgb
+        )
 
     scroll_area_height = max(0, UI_HEIGHT - FOOTER_HEIGHT)
     clip_rect = pygame.Rect(0, 0, UI_WIDTH, scroll_area_height)
