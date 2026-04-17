@@ -378,13 +378,17 @@ while running:
         )
 
     elif mode == "playback":
-        luminance_buffer, edge_buffer, buffer_rgb = frames[frame_index]
+        frame = frames[frame_index]
 
-        char_idx, edge_mask, edge_dir, diag_sign = ascii_map(
-            luminance_buffer,
-            edge_buffer,
-            chars
-        )
+        if len(frame) == 6:
+            char_idx, edge_mask, edge_dir, diag_sign, edge_buffer, buffer_rgb = frame
+        else:
+            luminance_buffer, edge_buffer, buffer_rgb = frame
+            char_idx, edge_mask, edge_dir, diag_sign = ascii_map(
+                luminance_buffer,
+                edge_buffer,
+                chars,
+            )
 
         draw_buffer(
             render_surface,
@@ -397,7 +401,7 @@ while running:
             char_cache,
             char_w,
             char_h,
-            buffer_rgb
+            buffer_rgb,
         )
 
     scroll_area_height = max(0, UI_HEIGHT - FOOTER_HEIGHT)

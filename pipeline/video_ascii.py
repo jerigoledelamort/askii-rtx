@@ -1,24 +1,35 @@
-import pygame
-import imageio
-import os
 from datetime import datetime
-from config import default as config
+import os
 
+import imageio
+import pygame
+
+from config import default as config
 from engine.render import draw_buffer
 
 
+DEFAULT_PLAYBACK_FPS = 24
+
+
+def _playback_fps():
+    mode_cfg = getattr(config, "MODE", None)
+    if isinstance(mode_cfg, dict):
+        return int(mode_cfg.get("playback_fps", DEFAULT_PLAYBACK_FPS))
+    return DEFAULT_PLAYBACK_FPS
+
+
 def save_video_ascii(frames, chars, char_cache, char_w, char_h):
-    # --- размеры ---
-    first_idx = frames[0][0]
-    h = len(first_idx)
-    w = len(first_idx[0])
+    if not frames:
+        raise ValueError("Cannot save video: empty frame list")
+
+    first_char_idx = frames[0][0]
+    h, w = first_char_idx.shape
 
     width = w * char_w
     height = h * char_h
 
     surface = pygame.Surface((width, height))
 
-    # --- папка ---
     output_dir = "renders"
     os.makedirs(output_dir, exist_ok=True)
 
@@ -27,18 +38,28 @@ def save_video_ascii(frames, chars, char_cache, char_w, char_h):
 
     writer = imageio.get_writer(
         filepath,
-        fps=config.MODE["playback_fps"],
+        fps=_playback_fps(),
         codec="libx264",
-        ffmpeg_params=["-pix_fmt", "yuv420p"]
+        ffmpeg_params=["-pix_fmt", "yuv420p"],
     )
 
-    for frame_idx, frame_rgb in frames:
+    for char_idx, edge_mask, edge_dir, diag_sign, edge_buffer, frame_rgb in frames:
         surface.fill((0, 0, 0))
 
-        # 🔥 ВАЖНО: используем ТОТ ЖЕ рендер
-        draw_buffer(surface, frame_idx, chars, char_cache, char_w, char_h, frame_rgb)
+        draw_buffer(
+            surface,
+            char_idx,
+            edge_mask,
+            edge_dir,
+            diag_sign,
+            edge_buffer,
+            chars,
+            char_cache,
+            char_w,
+            char_h,
+            frame_rgb,
+        )
 
-        # --- surface → numpy ---
         img = pygame.surfarray.array3d(surface)
         img = img.transpose([1, 0, 2])
 
