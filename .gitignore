@@ -1,0 +1,24 @@
+# Visual Studio
+.vs/
+*.vcxproj.user
+*.sln.docstates
+
+# Build
+build/
+out/
+bin/
+*.exe
+*.obj
+*.pdb
+
+# CMake
+CMakeFiles/
+CMakeCache.txt
+
+# OS
+.DS_Store
+Thumbs.db
+
+external/glm/doc/
+external/glm/test/
+external/glm/util/
