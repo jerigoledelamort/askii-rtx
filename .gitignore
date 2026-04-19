@@ -1,24 +1,102 @@
-# Visual Studio
-.vs/
-*.vcxproj.user
-*.sln.docstates
+# =========================
 
-# Build
+# BUILD / GENERATED
+
+# =========================
+
 build/
 out/
-bin/
-*.exe
-*.obj
-*.pdb
-
-# CMake
 CMakeFiles/
 CMakeCache.txt
+cmake_install.cmake
+*.sln
+*.slnx
+*.vcxproj*
+*.vcxproj.filters
+*.ninja
+*.log
 
-# OS
-.DS_Store
+# =========================
+
+# BINARIES
+
+# =========================
+
+*.exe
+*.dll
+*.lib
+*.pdb
+*.ilk
+
+# =========================
+
+# OBJECT FILES
+
+# =========================
+
+*.obj
+*.o
+*.a
+
+# =========================
+
+# CMAKE / CACHE SHIT
+
+# =========================
+
+CMakeScripts/
+Testing/
+install_manifest.txt
+
+# =========================
+
+# IDE
+
+# =========================
+
+.vs/
+.vscode/
+.idea/
+
+# =========================
+
+# WINDOWS
+
+# =========================
+
 Thumbs.db
+Desktop.ini
 
-external/glm/doc/
-external/glm/test/
-external/glm/util/
+# =========================
+
+# IMGUI CONFIG (локальное)
+
+# =========================
+
+imgui.ini
+
+# =========================
+
+# USER CONFIG (если не хочешь коммитить)
+
+# =========================
+
+config.ini
+
+# =========================
+
+# LOGS
+
+# =========================
+
+*.tlog
+*.lastbuildstate
+
+# =========================
+
+# TEMP
+
+# =========================
+
+*.tmp
+*.temp

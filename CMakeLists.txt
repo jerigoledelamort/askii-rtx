@@ -34,8 +34,9 @@ else()
 	set(IMGUI_FOUND FALSE)
 endif()
 
-# Попытка найти Python (опционально)
-find_package(Python3 COMPONENTS Interpreter QUIET)
+option(ASCII_RTX_BUILD_GUI "Build the GUI application" ON)
+option(ASCII_RTX_BUILD_VIEWER "Build the batch viewer application" OFF)
+option(ASCII_RTX_BUILD_INTERACTIVE "Build the interactive console application" OFF)
 
 # Исходные файлы
 set(ENGINE_SOURCES
@@ -54,19 +55,12 @@ set(GEOMETRY_SOURCES
 	src/geometry/plane.cpp
 )
 
-set(PIPELINE_SOURCES
-	src/pipeline/video_ascii.cpp
-)
-
 set(UTILS_SOURCES
 	src/utils/char_calibration.cpp
 )
 
-set(UI_SOURCES
-	src/apps/viewer/ui.cpp
-)
-
 set(MAIN_SOURCES
+	src/apps/viewer/ui.cpp
 	src/apps/viewer/main.cpp
 )
 
@@ -99,9 +93,7 @@ endif()
 add_library(ascii_rtx_engine STATIC
 	${ENGINE_SOURCES}
 	${GEOMETRY_SOURCES}
-	${PIPELINE_SOURCES}
 	${UTILS_SOURCES}
-	${UI_SOURCES}
 )
 
 # Ссылки на стандартные библиотеки
@@ -109,35 +101,36 @@ target_link_libraries(ascii_rtx_engine
 	${CMAKE_DL_LIBS}
 )
 
-# Основное приложение
-add_executable(ascii_rtx_viewer ${MAIN_SOURCES})
+if(ASCII_RTX_BUILD_VIEWER)
+	add_executable(ascii_rtx_viewer ${MAIN_SOURCES})
 
-target_link_libraries(ascii_rtx_viewer 
-	ascii_rtx_engine
-	${CMAKE_DL_LIBS}
-)
+	target_link_libraries(ascii_rtx_viewer 
+		ascii_rtx_engine
+		${CMAKE_DL_LIBS}
+	)
 
-# Интерактивное приложение
-add_executable(ascii_rtx_interactive ${INTERACTIVE_SOURCES})
+	set_target_properties(ascii_rtx_viewer PROPERTIES
+		CXX_STANDARD 17
+		CXX_STANDARD_REQUIRED ON
+	)
+endif()
 
-target_link_libraries(ascii_rtx_interactive 
-	ascii_rtx_engine
-	${CMAKE_DL_LIBS}
-)
+if(ASCII_RTX_BUILD_INTERACTIVE)
+	add_executable(ascii_rtx_interactive ${INTERACTIVE_SOURCES})
 
-# Настройка целей
-set_target_properties(ascii_rtx_viewer PROPERTIES
-	CXX_STANDARD 17
-	CXX_STANDARD_REQUIRED ON
-)
+	target_link_libraries(ascii_rtx_interactive 
+		ascii_rtx_engine
+		${CMAKE_DL_LIBS}
+	)
 
-set_target_properties(ascii_rtx_interactive PROPERTIES
-	CXX_STANDARD 17
-	CXX_STANDARD_REQUIRED ON
-)
+	set_target_properties(ascii_rtx_interactive PROPERTIES
+		CXX_STANDARD 17
+		CXX_STANDARD_REQUIRED ON
+	)
+endif()
 
 # GUI приложение (если ImGui найдена)
-if(IMGUI_FOUND)
+if(ASCII_RTX_BUILD_GUI AND IMGUI_FOUND)
 	add_executable(ascii_rtx_gui 
 		${GUI_SOURCES}
 		${IMGUI_SOURCES}
@@ -156,7 +149,9 @@ if(IMGUI_FOUND)
 		LINK_FLAGS "/SUBSYSTEM:WINDOWS /ENTRY:WinMainCRTStartup"
 	)
 else()
-	message(WARNING "ImGui not found - GUI application will not be built")
+	if(ASCII_RTX_BUILD_GUI)
+		message(WARNING "ImGui not found - GUI application will not be built")
+	endif()
 endif()
 
 # Информация о конфигурации
@@ -169,11 +164,15 @@ message(STATUS "C++ Standard: ${CMAKE_CXX_STANDARD}")
 message(STATUS "======================================")
 message(STATUS "Build targets:")
 message(STATUS "  - ascii_rtx_engine (static library)")
-message(STATUS "  - ascii_rtx_viewer (batch renderer)")
-message(STATUS "  - ascii_rtx_interactive (console interactive)")
-if(IMGUI_FOUND)
+if(ASCII_RTX_BUILD_VIEWER)
+	message(STATUS "  - ascii_rtx_viewer (batch renderer)")
+endif()
+if(ASCII_RTX_BUILD_INTERACTIVE)
+	message(STATUS "  - ascii_rtx_interactive (console interactive)")
+endif()
+if(ASCII_RTX_BUILD_GUI AND IMGUI_FOUND)
 	message(STATUS "  - ascii_rtx_gui (GUI with ImGui)")
-else()
+elseif(ASCII_RTX_BUILD_GUI)
 	message(STATUS "  - ascii_rtx_gui (SKIPPED - ImGui not found)")
 endif()
 message(STATUS "======================================")

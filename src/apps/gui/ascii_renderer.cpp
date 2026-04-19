@@ -1,14 +1,20 @@
 #include "ascii_renderer.h"
+#include "../../config/default.h"
+#include "../../engine/materials.h"
+#include "../../engine/render.h"
 #include <cmath>
 #include <algorithm>
+#include <cstring>
 
 namespace gui {
 
 AsciiRenderer::AsciiRenderer(int width, int height)
-	: width_(width), height_(height) {
-	rgb_buffer_.resize(width * height * 3, 0.5f);
-	ascii_buffer_.resize((width / char_width_) * (height / char_height_), ' ');
-	pixel_buffer_.resize(width * height, 0xFF000000);
+	: resolution_width_(std::max(1, width)),
+	  resolution_height_(std::max(1, height)) {
+	char_width_ = std::max(1, char_width_);
+	char_height_ = std::max(1, char_height_);
+	ascii_width_ = std::max(1, resolution_width_ / char_width_);
+	ascii_height_ = std::max(1, resolution_height_ / char_height_);
 }
 
 AsciiRenderer::~AsciiRenderer() {
@@ -16,15 +22,26 @@ AsciiRenderer::~AsciiRenderer() {
 }
 
 bool AsciiRenderer::initialize() {
-	// Инициализация буферов
+	config::init_default_config();
+	materials::init_materials();
+	rebuild_gpu_if_needed();
+	if (!gpu_render_) {
+		return false;
+	}
 	std::fill(rgb_buffer_.begin(), rgb_buffer_.end(), 0.5f);
+	std::fill(luminance_buffer_.begin(), luminance_buffer_.end(), 0.5f);
 	std::fill(ascii_buffer_.begin(), ascii_buffer_.end(), ' ');
 	std::fill(pixel_buffer_.begin(), pixel_buffer_.end(), 0xFF000000);
 	return true;
 }
 
 void AsciiRenderer::cleanup() {
+	if (gpu_render_) {
+		delete gpu_render_;
+		gpu_render_ = nullptr;
+	}
 	rgb_buffer_.clear();
+	luminance_buffer_.clear();
 	ascii_buffer_.clear();
 	pixel_buffer_.clear();
 }
@@ -33,123 +50,147 @@ void AsciiRenderer::clear() {
 	std::fill(pixel_buffer_.begin(), pixel_buffer_.end(), 0xFF000000);
 }
 
-void AsciiRenderer::resize(int width, int height) {
-	if (width <= 0 || height <= 0) return;
-
-	width_ = width;
-	height_ = height;
-
-	rgb_buffer_.resize(width * height * 3, 0.5f);
-	int ascii_w = width / char_width_;
-	int ascii_h = height / char_height_;
-	ascii_buffer_.resize(ascii_w * ascii_h, ' ');
-	pixel_buffer_.resize(width * height, 0xFF000000);
+void AsciiRenderer::set_resolution(int width, int height) {
+	resolution_width_ = std::max(1, width);
+	resolution_height_ = std::max(1, height);
 }
 
-void AsciiRenderer::render_scene(float time, const glm::vec3& camera_pos, const glm::vec3& camera_rot) {
+void AsciiRenderer::set_ascii_grid(int ascii_width, int ascii_height) {
+	ascii_width_ = std::max(1, ascii_width);
+	ascii_height_ = std::max(1, ascii_height);
+	rebuild_gpu_if_needed();
+}
+
+void AsciiRenderer::set_char_size(int w, int h) {
+	if (w <= 0 || h <= 0) {
+		return;
+	}
+	char_width_ = w;
+	char_height_ = h;
+}
+
+void AsciiRenderer::set_camera(const glm::vec3& position, const glm::vec3& rotation) {
+	camera_pos_ = position;
+	camera_rot_ = rotation;
+}
+
+void AsciiRenderer::reset_accumulation_buffer() {
+	if (gpu_render_) {
+		gpu_render_->reset_accumulation_buffer();
+	}
+}
+
+void AsciiRenderer::resize(int width, int height) {
+	set_resolution(width, height);
+}
+
+void AsciiRenderer::rebuild_gpu_if_needed() {
+	if (gpu_render_ &&
+		gpu_render_->get_width() == ascii_width_ &&
+		gpu_render_->get_height() == ascii_height_) {
+		return;
+	}
+
+	if (gpu_render_) {
+		delete gpu_render_;
+		gpu_render_ = nullptr;
+	}
+
+	gpu_render_ = new GpuRender(ascii_width_, ascii_height_);
+	gpu_render_->initialize();
+
+	rgb_buffer_.resize(static_cast<size_t>(ascii_width_) * static_cast<size_t>(ascii_height_) * 3, 0.0f);
+	luminance_buffer_.resize(static_cast<size_t>(ascii_width_) * static_cast<size_t>(ascii_height_), 0.0f);
+	ascii_buffer_.resize(static_cast<size_t>(ascii_width_) * static_cast<size_t>(ascii_height_), ' ');
+	pixel_buffer_.resize(static_cast<size_t>(ascii_width_) * static_cast<size_t>(ascii_height_), 0xFF000000);
+}
+
+void AsciiRenderer::render_scene(float time) {
 	clear();
-	update_rgb_buffer(time, camera_pos, camera_rot);
+	update_rgb_buffer(time);
 	rgb_to_ascii();
 	ascii_to_pixels();
 }
 
-void AsciiRenderer::update_rgb_buffer(float time, const glm::vec3& camera_pos, const glm::vec3& camera_rot) {
-	// Симуляция 3D сцены через градиент
-	// На основе позиции камеры и времени
+void AsciiRenderer::update_rgb_buffer(float time) {
+	if (!gpu_render_) {
+		return;
+	}
 
-	for (int y = 0; y < height_; ++y) {
-		for (int x = 0; x < width_; ++x) {
-			int idx = (y * width_ + x) * 3;
+	float pitch = camera_rot_.x;
+	float yaw = camera_rot_.y;
+	glm::vec3 forward(
+		std::sin(yaw) * std::cos(pitch),
+		std::sin(pitch),
+		-std::cos(yaw) * std::cos(pitch)
+	);
+	forward = glm::normalize(forward);
 
-			// Базовый градиент
-			float fx = static_cast<float>(x) / width_;
-			float fy = static_cast<float>(y) / height_;
+	glm::vec3 world_up(0.0f, 1.0f, 0.0f);
+	glm::vec3 right = glm::normalize(glm::cross(forward, world_up));
+	if (glm::dot(right, right) < 0.000001f) {
+		right = glm::vec3(1.0f, 0.0f, 0.0f);
+	}
+	glm::vec3 up = glm::normalize(glm::cross(right, forward));
 
-			// Применяем волну на основе времени и позиции камеры
-			float wave_x = std::sin(fx * 3.14159f * 4.0f + time * 0.5f + camera_pos.x);
-			float wave_y = std::cos(fy * 3.14159f * 4.0f + time * 0.5f + camera_pos.z);
-			float wave_t = std::sin(time * 0.3f) * 0.5f + 0.5f;
+	gpu_render_->render_frame(
+		camera_pos_,
+		forward,
+		right,
+		up,
+		config::g_config.camera.fov,
+		1,
+		time
+	);
 
-			// RGB каналы с анимацией
-			rgb_buffer_[idx] = (0.5f + 0.5f * wave_x) * wave_t;           // R
-			rgb_buffer_[idx + 1] = (0.5f + 0.5f * wave_y) * (1.0f - wave_t);  // G
-			rgb_buffer_[idx + 2] = (fx + fy) * 0.5f + 0.25f;                  // B
+	float* rgb = gpu_render_->get_rgb_buffer();
+	float* luminance = gpu_render_->get_luminance_buffer();
 
-			// Добавляем влияние позиции камеры
-			float cam_dist = std::sqrt(camera_pos.x * camera_pos.x + camera_pos.z * camera_pos.z);
-			rgb_buffer_[idx] *= (0.5f + 0.5f * std::sin(cam_dist + time));
-		}
+	for (int i = 0; i < ascii_width_ * ascii_height_ * 3; ++i) {
+		rgb_buffer_[i] = rgb[i];
+	}
+
+	for (int i = 0; i < ascii_width_ * ascii_height_; ++i) {
+		luminance_buffer_[i] = luminance[i];
 	}
 }
 
 void AsciiRenderer::rgb_to_ascii() {
-	int ascii_w = get_ascii_width();
-	int ascii_h = get_ascii_height();
-	const int ramp_size = 10;  // " .:-=+*#%@"
+	const int ramp_size = static_cast<int>(std::strlen(char_ramp_));
 
-	for (int y = 0; y < ascii_h; ++y) {
-		for (int x = 0; x < ascii_w; ++x) {
-			// Берём пиксель с шагом char_width/char_height
-			int px = x * char_width_;
-			int py = y * char_height_;
-
-			// Вычисляем среднюю яркость в блоке
-			float lum = 0.0f;
-			int count = 0;
-
-			for (int dy = 0; dy < char_height_ && (py + dy) < height_; ++dy) {
-				for (int dx = 0; dx < char_width_ && (px + dx) < width_; ++dx) {
-					int idx = ((py + dy) * width_ + (px + dx)) * 3;
-					float r = rgb_buffer_[idx];
-					float g = rgb_buffer_[idx + 1];
-					float b = rgb_buffer_[idx + 2];
-
-					lum += 0.299f * r + 0.587f * g + 0.114f * b;
-					count++;
-				}
-			}
-
-			if (count > 0) {
-				lum /= count;
-			}
-
-			lum = std::max(0.0f, std::min(1.0f, lum));
-			int char_idx = static_cast<int>(lum * (ramp_size - 1));
-			ascii_buffer_[y * ascii_w + x] = char_ramp_[char_idx];
-		}
+	for (int i = 0; i < ascii_width_ * ascii_height_; ++i) {
+		int rgb_idx = i * 3;
+		glm::vec3 color(
+			rgb_buffer_[rgb_idx],
+			rgb_buffer_[rgb_idx + 1],
+			rgb_buffer_[rgb_idx + 2]
+		);
+		float luminance = glm::dot(color, glm::vec3(0.2126f, 0.7152f, 0.0722f));
+		luminance = std::max(0.0f, std::min(1.0f, luminance));
+		luminance_buffer_[i] = luminance;
+		int char_idx = static_cast<int>(luminance * static_cast<float>(ramp_size - 1));
+		char_idx = std::clamp(char_idx, 0, ramp_size - 1);
+		ascii_buffer_[i] = char_ramp_[char_idx];
 	}
 }
 
 void AsciiRenderer::ascii_to_pixels() {
-	int ascii_w = get_ascii_width();
-	int ascii_h = get_ascii_height();
-
-	for (int y = 0; y < ascii_h; ++y) {
-		for (int x = 0; x < ascii_w; ++x) {
-			char c = ascii_buffer_[y * ascii_w + x];
-
-			// Рендеринг символа в блок пикселей
-			for (int dy = 0; dy < char_height_ && (y * char_height_ + dy) < height_; ++dy) {
-				for (int dx = 0; dx < char_width_ && (x * char_width_ + dx) < width_; ++dx) {
-					int px = x * char_width_ + dx;
-					int py = y * char_height_ + dy;
-					int pidx = py * width_ + px;
-
-					if (pidx < static_cast<int>(pixel_buffer_.size())) {
-						// Базовый цвет - зелёный (классический ASCII арт)
-						uint8_t brightness = static_cast<uint8_t>(c * 25);  // Яркость на основе символа
-						pixel_buffer_[pidx] = 0xFF000000 | (brightness << 8);  // Green channel
-					}
-				}
-			}
-		}
+	for (int i = 0; i < ascii_width_ * ascii_height_; ++i) {
+		uint8_t gray = static_cast<uint8_t>(
+			std::max(0.0f, std::min(255.0f, luminance_buffer_[i] * 255.0f))
+		);
+		pixel_buffer_[i] = 0xFF000000u |
+			(static_cast<uint32_t>(gray) << 16) |
+			(static_cast<uint32_t>(gray) << 8) |
+			static_cast<uint32_t>(gray);
 	}
 }
 
 uint32_t AsciiRenderer::render_char(char c, int x, int y) {
-	// Простой рендеринг символа как одного пикселя с разной яркостью
-	uint8_t brightness = static_cast<uint8_t>((static_cast<int>(c) * 25) % 256);
-	return 0xFF000000 | (brightness << 8);
+	(void)c;
+	(void)x;
+	(void)y;
+	return 0xFF000000u;
 }
 
 void AsciiRenderer::get_framebuffer(std::vector<uint32_t>& out_pixels) const {

@@ -2,6 +2,7 @@
 #include <imgui.h>
 #include <imgui_impl_win32.h>
 #include <imgui_impl_dx11.h>
+#include <iostream>
 #include <sstream>
 
 namespace gui {
@@ -69,7 +70,8 @@ void ImGuiMenu::draw_main_menu_bar() {
 		}
 
 		if (ImGui::BeginMenu("Help")) {
-			ImGui::TextWrapped("Controls:\nWASD - Move\nArrows - Rotate\nR - Reset\nESC - Exit");
+			ImGui::TextWrapped(
+				"Controls:\nWASD — move on ground plane\nShift / Ctrl — up / down\nLMB drag — look (when UI does not capture)\nMouse wheel — zoom (over scene, not over UI)\nR — reset camera\nESC — exit");
 			ImGui::EndMenu();
 		}
 
@@ -78,27 +80,35 @@ void ImGuiMenu::draw_main_menu_bar() {
 }
 
 void ImGuiMenu::draw_config_window() {
+	const int snap_rw = config_.resolution_width;
+	const int snap_rh = config_.resolution_height;
+	const int snap_cw = config_.char_width;
+	const int snap_ch = config_.char_height;
+
 	if (ImGui::Begin("Configuration##main", &show_config_menu_, ImGuiWindowFlags_AlwaysAutoResize)) {
 		// === VIDEO SETTINGS ===
 		if (ImGui::CollapsingHeader("Video Settings", ImGuiTreeNodeFlags_DefaultOpen)) {
 			static const int resolutions[][2] = {
-				{800, 600}, {1024, 768}, {1280, 720}, 
+				{800, 600}, {1024, 768}, {1280, 720},
 				{1600, 900}, {1920, 1080}, {2560, 1440}
 			};
 			static int resolution_idx = 2;
 
-			if (ImGui::BeginCombo("Resolution##combo", 
-					(std::to_string(config_.window_width) + "x" + 
-					 std::to_string(config_.window_height)).c_str())) {
+			if (ImGui::BeginCombo("Resolution##combo",
+					(std::to_string(config_.resolution_width) + "x" +
+					 std::to_string(config_.resolution_height)).c_str())) {
 				for (int i = 0; i < 6; i++) {
 					bool is_selected = (resolution_idx == i);
 					if (ImGui::Selectable(
-							(std::to_string(resolutions[i][0]) + "x" + 
+							(std::to_string(resolutions[i][0]) + "x" +
 							 std::to_string(resolutions[i][1])).c_str(),
 							is_selected)) {
 						resolution_idx = i;
+						config_.resolution_width = resolutions[i][0];
+						config_.resolution_height = resolutions[i][1];
 						config_.window_width = resolutions[i][0];
 						config_.window_height = resolutions[i][1];
+						config_.refresh_ascii_grid();
 					}
 					if (is_selected)
 						ImGui::SetItemDefaultFocus();
@@ -118,17 +128,18 @@ void ImGuiMenu::draw_config_window() {
 			static int char_size_idx = 2;
 
 			if (ImGui::BeginCombo("Character Size##combo",
-					(std::to_string(config_.char_width) + "x" + 
+					(std::to_string(config_.char_width) + "x" +
 					 std::to_string(config_.char_height)).c_str())) {
 				for (int i = 0; i < 5; i++) {
 					bool is_selected = (char_size_idx == i);
 					if (ImGui::Selectable(
-							(std::to_string(char_sizes[i][0]) + "x" + 
+							(std::to_string(char_sizes[i][0]) + "x" +
 							 std::to_string(char_sizes[i][1])).c_str(),
 							is_selected)) {
 						char_size_idx = i;
 						config_.char_width = char_sizes[i][0];
 						config_.char_height = char_sizes[i][1];
+						config_.refresh_ascii_grid();
 					}
 					if (is_selected)
 						ImGui::SetItemDefaultFocus();
@@ -136,8 +147,8 @@ void ImGuiMenu::draw_config_window() {
 				ImGui::EndCombo();
 			}
 
-			ImGui::Text("ASCII Grid: %dx%d", 
-					   config_.get_ascii_width(), 
+			ImGui::Text("ASCII Grid: %dx%d",
+					   config_.get_ascii_width(),
 					   config_.get_ascii_height());
 		}
 
@@ -148,8 +159,7 @@ void ImGuiMenu::draw_config_window() {
 			ImGui::Checkbox("Auto Rotate##check", &config_.auto_rotate);
 
 			if (ImGui::Button("Reset Camera##button")) {
-				config_.camera_pos = glm::vec3(0.0f, 1.5f, 4.0f);
-				config_.camera_rot = glm::vec3(0.0f);
+				config_.camera_reset_requested = true;
 			}
 		}
 
@@ -160,6 +170,19 @@ void ImGuiMenu::draw_config_window() {
 		}
 
 		ImGui::End();
+	}
+
+	if (snap_rw != config_.resolution_width || snap_rh != config_.resolution_height) {
+		config_.config_dirty = true;
+		std::cout << "[config] resolution changed -> " << config_.resolution_width << "x"
+			<< config_.resolution_height << " (ascii " << config_.ascii_width << "x"
+			<< config_.ascii_height << ")\n";
+	}
+	if (snap_cw != config_.char_width || snap_ch != config_.char_height) {
+		config_.config_dirty = true;
+		std::cout << "[config] char size / ascii grid changed -> char " << config_.char_width
+			<< "x" << config_.char_height << " grid " << config_.ascii_width << "x"
+			<< config_.ascii_height << "\n";
 	}
 }
 
@@ -173,9 +196,9 @@ void ImGuiMenu::draw_stats_window() {
 
 		ImGui::Text("FPS: %.1f", io.Framerate);
 		ImGui::Text("Frame Time: %.2f ms", 1000.0f / io.Framerate);
-		ImGui::Text("Resolution: %dx%d", config_.window_width, config_.window_height);
-		ImGui::Text("ASCII Grid: %dx%d", 
-				   config_.get_ascii_width(), 
+		ImGui::Text("Resolution: %dx%d", config_.resolution_width, config_.resolution_height);
+		ImGui::Text("ASCII Grid: %dx%d",
+				   config_.get_ascii_width(),
 				   config_.get_ascii_height());
 
 		ImGui::End();

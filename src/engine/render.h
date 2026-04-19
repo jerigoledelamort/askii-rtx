@@ -31,6 +31,17 @@ public:
 	int get_width() const { return width; }
 	int get_height() const { return height; }
 
+	// Сброс temporal accumulation (камера / размер буфера)
+	void reset_accumulation_buffer();
+
+	// Данные объекта на CPU (для трассировки); вынесено из private для free-функций в render.cpp
+	struct GpuSceneObject {
+		int type;
+		float px, py, pz;
+		float sx, sy, sz;
+		int material_id;
+	};
+
 private:
 	int width, height;
 
@@ -40,18 +51,18 @@ private:
 	float* d_normal;
 	float* d_edge;
 
-	// Временные буферы для TAA
+	// Накопление сэмплов (float3 на пиксель): sum(rgb) / frame_count → финальный кадр
 	float* d_accumulation;
-
-	// Scene data
-	struct GpuSceneObject {
-		int type;
-		float px, py, pz;
-		float sx, sy, sz;
-		int material_id;
-	};
 
 	GpuSceneObject* d_scene_objects;
 	int num_scene_objects;
 	Material* d_materials;
+
+	glm::vec3 last_camera_pos;
+	glm::vec3 last_camera_forward;
+	glm::vec3 last_camera_right;
+	glm::vec3 last_camera_up;
+	unsigned int frame_count;
+
+	void reset_accumulation();
 };

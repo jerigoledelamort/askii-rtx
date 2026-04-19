@@ -26,8 +26,8 @@ if exist "build\ascii_rtx_gui.exe" (
 	echo [ERROR] GUI executable not found!
 	echo.
 	echo Please build the project first:
-	echo   Option 1: Run build.bat all
-	echo   Option 2: Run: cmake --build .\build --config Release
+	echo   cmake -S . -B build -DASCII_RTX_BUILD_GUI=ON
+	echo   cmake --build build --config Release
 	echo.
 	pause
 	exit /b 1
